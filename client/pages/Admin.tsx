@@ -8,10 +8,12 @@ import {
 import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { AdminUserProfile } from "@/components/AdminUserProfile";
+import { AdminWithdrawals } from "@/components/admin/AdminWithdrawals";
 import { InvestmentHistoryChart } from "@/components/InvestmentHistoryChart";
 import {
   Activity,
   ArrowDownToLine,
+  ArrowUpFromLine,
   ArrowLeft,
   ArrowUpRight,
   BookOpen,
@@ -31,6 +33,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { explorerUrl } from "@shared/deposit-assets";
+import { fetchUsdQuotes } from "@/lib/prices";
 import {
   INTERVAL_ERROR,
   describeMovement,
@@ -42,7 +45,13 @@ import { supabase } from "@/lib/supabase";
 
 const ASSETS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK"];
 type Section =
-  "market" | "content" | "alerts" | "deposits" | "investments" | "users";
+  | "market"
+  | "content"
+  | "alerts"
+  | "deposits"
+  | "withdrawals"
+  | "investments"
+  | "users";
 type MarketOverride = {
   symbol: string;
   price: number | null;
@@ -191,6 +200,21 @@ async function adminRequest<T>(
         "The transfer was confirmed, but the amount couldn't be added to the user's investment. Add it manually on the Investments tab.",
       );
     }
+    const withdrawalMessages: Record<string, string> = {
+      withdrawals_migration_required:
+        "Withdrawals aren't set up in the database yet. Run supabase/migrations/202610180001_withdrawals.sql in the Supabase SQL editor.",
+      withdrawal_already_final:
+        "This withdrawal is already completed or rejected and can't be changed.",
+      withdrawal_status_unchanged: "The withdrawal already has that status.",
+      withdrawal_insufficient_funds:
+        "The user's investment doesn't hold enough to complete this withdrawal.",
+      withdrawal_not_found: "This withdrawal no longer exists.",
+      rejection_note_required:
+        "Add a note explaining why the withdrawal was rejected.",
+    };
+    if (body?.error && withdrawalMessages[body.error]) {
+      throw new AdminRequestError(withdrawalMessages[body.error]);
+    }
     if (body?.error === "cannot_delete_self") {
       throw new AdminRequestError("You can't delete your own admin account.");
     }
@@ -250,7 +274,7 @@ function AdminAccessMessage({
         <ShieldCheck size={30} />
         <h1>{title}</h1>
         <p>{children}</p>
-        <Link className="button button-primary" to="/">
+        <Link className="button button-primary" to="/dashboard">
           <ArrowLeft size={15} /> Return to Northstar
         </Link>
       </section>
@@ -658,49 +682,17 @@ This removes their sign-in, all transfer submissions, and all assigned investmen
   useEffect(() => {
     if (section !== "deposits" || !hasPendingDeposits) return;
     const controller = new AbortController();
-    const fromBinance = async () => {
-      const symbols = encodeURIComponent(
-        JSON.stringify(["BTCUSDT", "ETHUSDT", "SOLUSDT"]),
-      );
-      const response = await fetch(
-        `https://api.binance.com/api/v3/ticker/price?symbols=${symbols}`,
-        { signal: controller.signal },
-      );
-      if (!response.ok) throw new Error("Binance prices unavailable");
-      const tickers = (await response.json()) as {
-        symbol: string;
-        price: string;
-      }[];
-      return Object.fromEntries(
-        tickers.map((ticker) => [
-          ticker.symbol.replace(/USDT$/, ""),
-          Number(ticker.price),
-        ]),
-      );
-    };
-    // Binance is unavailable in some regions; CoinGecko is the fallback.
-    const fromCoinGecko = async () => {
-      const response = await fetch(
-        "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd",
-        { signal: controller.signal },
-      );
-      if (!response.ok) throw new Error("CoinGecko prices unavailable");
-      const prices = (await response.json()) as Record<string, { usd: number }>;
-      return {
-        BTC: prices.bitcoin?.usd,
-        ETH: prices.ethereum?.usd,
-        SOL: prices.solana?.usd,
-      };
-    };
-    void fromBinance()
-      .catch(fromCoinGecko)
-      .then((prices) => {
-        const next: Record<string, number> = { USDT: 1 };
-        for (const [symbol, price] of Object.entries(prices)) {
-          if (Number(price) > 0) next[symbol] = Number(price);
-        }
-        setUsdPrices(next);
-      })
+    void fetchUsdQuotes(controller.signal)
+      .then((quotes) =>
+        setUsdPrices(
+          Object.fromEntries(
+            Object.entries(quotes).map(([symbol, quote]) => [
+              symbol,
+              quote.price,
+            ]),
+          ),
+        ),
+      )
       .catch(() => undefined);
     return () => controller.abort();
   }, [hasPendingDeposits, section]);
@@ -888,6 +880,7 @@ This removes their sign-in, all transfer submissions, and all assigned investmen
     { id: "content", label: "Content", icon: BookOpen },
     { id: "alerts", label: "Email alerts", icon: Users },
     { id: "deposits", label: "Token transfers", icon: ArrowDownToLine },
+    { id: "withdrawals", label: "Withdrawals", icon: ArrowUpFromLine },
     { id: "investments", label: "Investments", icon: Coins },
     { id: "users", label: "User profiles", icon: Users },
   ];
@@ -933,7 +926,7 @@ This removes their sign-in, all transfer submissions, and all assigned investmen
               ))}
             </nav>
           </div>
-          <Link className="admin-back-link" to="/">
+          <Link className="admin-back-link" to="/dashboard">
             <ArrowLeft size={15} /> Back to application
           </Link>
         </aside>
@@ -951,6 +944,8 @@ This removes their sign-in, all transfer submissions, and all assigned investmen
                   "Review email subscribers and manage their alert delivery preferences."}
                 {section === "deposits" &&
                   "Review user-submitted token transfers, verify each transaction on-chain, and record a decision."}
+                {section === "withdrawals" &&
+                  "Process user withdrawal requests: set them to pending or processing, then complete or reject them."}
                 {section === "investments" &&
                   "Select a user, set a starting balance, and choose upward, downward, or continuous chart movement."}
                 {section === "users" &&
@@ -1990,6 +1985,12 @@ This removes their sign-in, all transfer submissions, and all assigned investmen
                     </>
                   )}
                 </div>
+              )}
+              {section === "withdrawals" && (
+                <AdminWithdrawals
+                  request={adminRequest}
+                  onOpenProfile={(userId) => void openProfile(userId)}
+                />
               )}
               {section === "users" && (
                 <div className="panel admin-panel">

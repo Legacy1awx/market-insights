@@ -6,6 +6,7 @@ import { emailRouter } from "./routes/email.ts";
 import { adminRouter, publicAdminDataRouter } from "./routes/admin.ts";
 import { depositRouter } from "./routes/deposits.ts";
 import { investmentsRouter } from "./routes/investments.ts";
+import { withdrawalRouter } from "./routes/withdrawals.ts";
 
 export function createServer() {
   const app = express();
@@ -29,6 +30,7 @@ export function createServer() {
   app.use("/api/admin", adminRouter);
   app.use("/api/deposits", depositRouter);
   app.use("/api/investments", investmentsRouter);
+  app.use("/api/withdrawals", withdrawalRouter);
   app.use("/api/email", emailRouter);
 
   return app;

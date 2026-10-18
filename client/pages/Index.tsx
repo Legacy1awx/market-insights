@@ -32,6 +32,7 @@ import {
   Plus,
   Search,
   Send,
+  ArrowUpFromLine,
   ShieldCheck,
   Settings2,
   SlidersHorizontal,
@@ -202,7 +203,7 @@ const ASSETS: Asset[] = [
 ];
 const TIMEFRAMES = ["1D", "1W", "1M", "3M", "1Y", "5Y", "ALL"];
 const SCREEN_PATHS: Record<Screen, string> = {
-  Overview: "/",
+  Overview: "/dashboard",
   Markets: "/markets",
   Portfolio: "/portfolio",
   Alerts: "/alerts",
@@ -787,7 +788,7 @@ export default function Index() {
   const navigate = useNavigate();
   const { symbol: assetRouteSymbol } = useParams<{ symbol: string }>();
   const returnScreenRef = useRef<Screen>("Overview");
-  const accountReturnPathRef = useRef("/");
+  const accountReturnPathRef = useRef("/dashboard");
   const [watchlist, setWatchlist] = useState<string[]>(() =>
     readStorage(STORAGE.watchlist, ["BTC", "ETH", "SOL", "LINK"]),
   );
@@ -942,13 +943,13 @@ export default function Index() {
         setActiveScreen("Overview");
         return;
       }
-      navigate("/");
+      navigate("/dashboard");
       return;
     }
     setSelectedAsset(null);
     const screen = PATH_SCREENS[location.pathname];
     if (screen) setActiveScreen(screen);
-    else navigate("/");
+    else navigate("/dashboard");
   }, [assetRouteSymbol, location.pathname, location.state, navigate]);
 
   const marketAssets = useMemo(
@@ -1337,7 +1338,7 @@ export default function Index() {
 
   const openAccount = () => {
     accountReturnPathRef.current =
-      location.pathname === "/account" ? "/" : location.pathname;
+      location.pathname === "/account" ? "/dashboard" : location.pathname;
     setAccountMode("auth");
     navigate("/account");
   };
@@ -1414,14 +1415,15 @@ export default function Index() {
               ["Alerts", Bell],
               ["Screener", SlidersHorizontal],
               ["Send funds", Send],
+              ["Withdraw", ArrowUpFromLine],
             ] as const
           ).map(([label, Icon]) => (
             <button
               key={label}
               onClick={() => {
-                if (label === "Send funds") {
+                if (label === "Send funds" || label === "Withdraw") {
                   setMobileMenu(false);
-                  navigate("/send");
+                  navigate(label === "Send funds" ? "/send" : "/withdraw");
                 } else {
                   navigateToScreen(label);
                 }

@@ -22,6 +22,7 @@ import {
   Filter,
   LoaderCircle,
   Plus,
+  ArrowUpFromLine,
   RefreshCw,
   Search,
   SlidersHorizontal,
@@ -735,6 +736,9 @@ function PortfolioView({ assets, prices }: Props) {
             <div className="managed-investments-actions">
               <Link className="button button-primary button-small" to="/send">
                 <Plus size={13} /> Invest
+              </Link>
+              <Link className="button button-subtle button-small" to="/withdraw">
+                <ArrowUpFromLine size={13} /> Withdraw
               </Link>
               <button
                 className="button button-subtle button-small"

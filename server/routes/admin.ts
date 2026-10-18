@@ -6,6 +6,7 @@ import {
   type NextFunction,
 } from "express";
 import { z } from "zod";
+import { createAdminWithdrawalRouter } from "./withdrawals.ts";
 
 const symbols = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "LINK"];
 const contentSchema = z.object({
@@ -317,6 +318,11 @@ adminRouter.use(
       response.status(503).json({ error: "admin_service_unavailable" });
     }
   },
+);
+
+adminRouter.use(
+  "/withdrawals",
+  createAdminWithdrawalRouter((metadata) => fullNameFromMetadata(metadata)),
 );
 
 adminRouter.get(

@@ -1,4 +1,7 @@
-import { supabase } from "@/lib/supabase";
+import { authorizedFetch } from "@/lib/api";
+
+// Re-exported so existing imports from "@/lib/deposits" keep working.
+export { formatDateTime, shortenMiddle } from "@/lib/api";
 
 export type DepositStatus = "pending" | "confirmed" | "rejected";
 
@@ -41,62 +44,14 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Your transfer couldn't be submitted right now. Please try again shortly.",
 };
 
-async function authorizedFetch(path: string, init: RequestInit = {}) {
-  if (!supabase) throw new Error("Sign-in is not configured.");
-  const { data, error } = await supabase.auth.getSession();
-  if (error) throw error;
-  const token = data.session?.access_token;
-  if (!token)
-    throw new Error("Your session has expired. Please sign in again.");
-  const response = await fetch(path, {
-    ...init,
-    cache: "no-store",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...init.headers,
-    },
-  });
-  const body = await response.json().catch(() => null);
-  if (!response.ok) {
-    const failure = body as {
-      error?: string;
-      details?: Record<string, string[]>;
-    } | null;
-    const detail = failure?.details
-      ? Object.values(failure.details).flat()[0]
-      : undefined;
-    throw new Error(
-      detail ??
-        ERROR_MESSAGES[failure?.error ?? ""] ??
-        "Something went wrong. Please try again.",
-    );
-  }
-  return body;
-}
-
 export async function fetchMyDeposits() {
-  return (await authorizedFetch("/api/deposits/mine")) as Deposit[];
+  return authorizedFetch<Deposit[]>("/api/deposits/mine", {}, ERROR_MESSAGES);
 }
 
 export async function submitDeposit(submission: DepositSubmission) {
-  return (await authorizedFetch("/api/deposits", {
-    method: "POST",
-    body: JSON.stringify(submission),
-  })) as Deposit;
-}
-
-export function formatDateTime(value: string | null) {
-  return value
-    ? new Date(value).toLocaleString(undefined, {
-        dateStyle: "medium",
-        timeStyle: "short",
-      })
-    : "—";
-}
-
-export function shortenMiddle(value: string, keep = 8) {
-  return value.length > keep * 2 + 3
-    ? `${value.slice(0, keep)}…${value.slice(-keep)}`
-    : value;
+  return authorizedFetch<Deposit>(
+    "/api/deposits",
+    { method: "POST", body: JSON.stringify(submission) },
+    ERROR_MESSAGES,
+  );
 }

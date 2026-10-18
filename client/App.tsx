@@ -8,10 +8,12 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import Home from "./pages/Home";
 import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 const Admin = lazy(() => import("./pages/Admin"));
 const SendFunds = lazy(() => import("./pages/SendFunds"));
+const Withdraw = lazy(() => import("./pages/Withdraw"));
 
 const queryClient = new QueryClient();
 
@@ -23,7 +25,8 @@ const App = () => (
       <BrowserRouter>
         <AuthProvider>
           <Routes>
-            <Route path="/" element={<Index />} />
+            <Route path="/" element={<Home />} />
+            <Route path="/dashboard" element={<Index />} />
             <Route path="/markets" element={<Index />} />
             <Route path="/portfolio" element={<Index />} />
             <Route path="/alerts" element={<Index />} />
@@ -35,6 +38,14 @@ const App = () => (
               element={
                 <Suspense fallback={<div role="status">Loading transfer addresses…</div>}>
                   <SendFunds />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/withdraw"
+              element={
+                <Suspense fallback={<div role="status">Loading withdrawals…</div>}>
+                  <Withdraw />
                 </Suspense>
               }
             />
