@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { ExternalLink } from "lucide-react";
 import { explorerUrl, networkLabel } from "@shared/deposit-assets";
 import {
@@ -34,6 +35,7 @@ export function TransferDetails({
   /** Extra buttons shown under the details, e.g. "View portfolio". */
   actions?: ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="transfer-details">
       <TransferTimeline
@@ -46,24 +48,28 @@ export function TransferDetails({
 
       {transfer.reviewNote && (
         <p className={`transfer-note ${transfer.status}`}>
-          <b>{audience === "admin" ? "Review note" : "Note from the admin"}</b>
+          <b>
+            {audience === "admin"
+              ? t("transfer.reviewNote")
+              : t("transfer.adminNote")}
+          </b>
           {transfer.reviewNote}
         </p>
       )}
 
       <dl className="transfer-facts">
         <div>
-          <dt>Amount</dt>
+          <dt>{t("transfer.amount")}</dt>
           <dd>
             {transfer.amount} {transfer.symbol}
           </dd>
         </div>
         <div>
-          <dt>Network</dt>
+          <dt>{t("transfer.network")}</dt>
           <dd>{networkLabel(transfer.network)}</dd>
         </div>
         <div className="transfer-fact-wide">
-          <dt>Transaction hash</dt>
+          <dt>{t("transfer.hash")}</dt>
           <dd className="transfer-mono-row">
             <code title={transfer.transactionHash}>
               {shortenMiddle(transfer.transactionHash, 10)}
@@ -71,7 +77,7 @@ export function TransferDetails({
             <CopyButton
               compact
               value={transfer.transactionHash}
-              label="Transaction hash"
+              label={t("transfer.hash")}
             />
             <a
               className="button button-subtle button-small"
@@ -79,12 +85,12 @@ export function TransferDetails({
               target="_blank"
               rel="noreferrer"
             >
-              <ExternalLink size={13} /> Explorer
+              <ExternalLink size={13} /> {t("transfer.explorer")}
             </a>
           </dd>
         </div>
         <div className="transfer-fact-wide">
-          <dt>Sent to</dt>
+          <dt>{t("transfer.sentTo")}</dt>
           <dd>
             <code title={transfer.recipientAddress}>
               {shortenMiddle(transfer.recipientAddress, 10)}
@@ -92,27 +98,27 @@ export function TransferDetails({
           </dd>
         </div>
         <div className="transfer-fact-wide">
-          <dt>Sent from</dt>
+          <dt>{t("transfer.sentFrom")}</dt>
           <dd>
             {transfer.senderAddress ? (
               <code title={transfer.senderAddress}>
                 {shortenMiddle(transfer.senderAddress, 10)}
               </code>
             ) : (
-              "Not provided"
+              t("transfer.notProvided")
             )}
           </dd>
         </div>
         <div>
-          <dt>Submitted</dt>
+          <dt>{t("transfer.submitted")}</dt>
           <dd>{formatDateTime(transfer.submittedAt)}</dd>
         </div>
         <div>
-          <dt>Reviewed</dt>
+          <dt>{t("transfer.reviewed")}</dt>
           <dd>
             {transfer.reviewedAt
               ? formatDateTime(transfer.reviewedAt)
-              : "Not yet"}
+              : t("transfer.notYet")}
           </dd>
         </div>
       </dl>

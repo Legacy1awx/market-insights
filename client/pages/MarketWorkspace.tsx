@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { InvestmentPriceChart } from "@/components/InvestmentPriceChart";
@@ -30,8 +31,19 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { authorizedFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { supabase } from "@/lib/supabase";
+import i18n from "@/i18n";
+import { dateFormat, formatUsd, numberFormat, usdFormat } from "@/i18n/format";
+import { MarketChart } from "@/components/market/MarketChart";
+import { Sparkline } from "@/components/market/Sparkline";
+import {
+  HOLDINGS_STORAGE,
+  holdingsHistory,
+  readHoldings,
+  type Holding,
+} from "@/lib/holdings";
+import { fetchCandles, type Candle, type Timeframe } from "@/lib/market";
 
 type Asset = {
   symbol: string;
@@ -41,6 +53,7 @@ type Asset = {
   marketCap: number;
   short: string;
   volume24h: number;
+  sparkline?: number[];
 };
 type Screen = "Markets" | "Portfolio" | "Alerts" | "Screener";
 type Props = {
@@ -51,12 +64,6 @@ type Props = {
   onToggleWatch: (symbol: string) => void;
   onOpenAsset: (symbol: string) => void;
   onAlertCountChange: (count: number) => void;
-};
-type Holding = {
-  id: string;
-  symbol: string;
-  quantity: number;
-  averageCost: number;
 };
 type ManagedInvestment = {
   id: string;
@@ -99,21 +106,29 @@ type SavedFilter = {
   direction: "all" | "gainers" | "losers";
 };
 
-const PORTFOLIO_STORAGE = "northstar-portfolio";
 const ALERT_STORAGE = "northstar-alerts";
 const SCREENER_STORAGE = "northstar-saved-screens";
-const money = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 2,
-});
-const compactMoney = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  notation: "compact",
-  maximumFractionDigits: 1,
-});
-const number = new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 });
+// Formatters follow the active language, so build them at call time.
+// Values can be NaN while live data loads; show a dash instead of "NaN".
+const money = {
+  format: (value: number) =>
+    Number.isFinite(value)
+      ? formatUsd(value, {
+          minimumFractionDigits: value > 0 && value < 1 ? 4 : 2,
+          maximumFractionDigits: value > 0 && value < 1 ? 4 : 2,
+        })
+      : "—",
+};
+const compactMoney = {
+  format: (value: number) =>
+    Number.isFinite(value)
+      ? usdFormat({ notation: "compact", maximumFractionDigits: 1 }).format(value)
+      : "—",
+};
+const number = {
+  format: (value: number) =>
+    numberFormat({ maximumFractionDigits: 4 }).format(value),
+};
 
 function readLocal<T>(key: string, fallback: T): T {
   try {
@@ -164,6 +179,7 @@ function ScreenHeading({
 }
 
 function Change({ value }: { value: number }) {
+  if (!Number.isFinite(value)) return <span>—</span>;
   return (
     <span className={value >= 0 ? "positive-text" : "negative-text"}>
       {value >= 0 ? "+" : "−"}
@@ -179,6 +195,7 @@ function MarketsView({
   onToggleWatch,
   onOpenAsset,
 }: Props) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [direction, setDirection] = useState<"all" | "gainers" | "losers">(
@@ -242,9 +259,9 @@ function MarketsView({
   return (
     <div className="workspace-view">
       <ScreenHeading
-        eyebrow="MARKET DIRECTORY"
-        title="Markets"
-        description="Compare the assets moving the digital asset market."
+        eyebrow={t("markets.eyebrow")}
+        title={t("nav.markets")}
+        description={t("markets.description")}
         action={
           <button
             className={
@@ -253,38 +270,38 @@ function MarketsView({
             onClick={() => setWatchOnly(!watchOnly)}
           >
             <Bookmark size={14} />{" "}
-            {watchOnly ? "Watchlist only" : "My watchlist"}
+            {watchOnly ? t("markets.watchlistOnly") : t("markets.myWatchlist")}
           </button>
         }
       />
       <div className="workspace-stat-row">
         <div className="panel workspace-stat">
-          <span>Assets tracked</span>
+          <span>{t("markets.tracked")}</span>
           <b>{assets.length}</b>
-          <small>Across spot markets</small>
+          <small>{t("markets.trackedHint")}</small>
         </div>
         <div className="panel workspace-stat">
-          <span>Gainers</span>
+          <span>{t("markets.gainers")}</span>
           <b className="positive-text">
             {assets.filter((asset) => asset.change > 0).length}
           </b>
-          <small>In the last 24 hours</small>
+          <small>{t("markets.last24h")}</small>
         </div>
         <div className="panel workspace-stat">
-          <span>Losers</span>
+          <span>{t("markets.losers")}</span>
           <b className="negative-text">
             {assets.filter((asset) => asset.change < 0).length}
           </b>
-          <small>In the last 24 hours</small>
+          <small>{t("markets.last24h")}</small>
         </div>
         <div className="panel workspace-stat">
-          <span>Tracked volume</span>
+          <span>{t("markets.trackedVolume")}</span>
           <b>
             {compactMoney.format(
               assets.reduce((sum, asset) => sum + asset.volume24h, 0),
             )}
           </b>
-          <small>24h quote volume · USD est.</small>
+          <small>{t("markets.trackedVolumeHint")}</small>
         </div>
       </div>
       <section className="panel data-panel">
@@ -292,13 +309,13 @@ function MarketsView({
           <div
             className="data-filter-pills"
             role="group"
-            aria-label="Filter markets"
+            aria-label={t("markets.filter")}
           >
             {(
               [
-                ["all", "All assets"],
-                ["gainers", "Gainers"],
-                ["losers", "Losers"],
+                ["all", t("markets.allAssets")],
+                ["gainers", t("markets.gainers")],
+                ["losers", t("markets.losers")],
               ] as const
             ).map(([value, label]) => (
               <button
@@ -318,23 +335,23 @@ function MarketsView({
               ref={searchInputRef}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Find an asset..."
-              aria-label="Find an asset"
+              placeholder={t("markets.findPlaceholder")}
+              aria-label={t("markets.find")}
             />
             <kbd>/</kbd>
           </label>
         </div>
         <div className="table-scroll">
-          <table className="market-table">
+          <table className="market-table markets-directory-table">
             <thead>
               <tr>
                 <th className="star-column">
-                  <span className="sr-only">Watchlist</span>
+                  <span className="sr-only">{t("watchlist.title")}</span>
                 </th>
-                <th>Asset</th>
+                <th>{t("watchlist.asset")}</th>
                 <th>
                   <button onClick={() => sortRows("price")}>
-                    Price{" "}
+                    {t("table.price")}{" "}
                     <SortMark
                       active={sort === "price"}
                       descending={descending}
@@ -343,7 +360,7 @@ function MarketsView({
                 </th>
                 <th>
                   <button onClick={() => sortRows("change")}>
-                    24h change{" "}
+                    {t("watchlist.change24h")}{" "}
                     <SortMark
                       active={sort === "change"}
                       descending={descending}
@@ -352,7 +369,7 @@ function MarketsView({
                 </th>
                 <th>
                   <button onClick={() => sortRows("marketCap")}>
-                    Market cap{" "}
+                    {t("asset.marketCap")}{" "}
                     <SortMark
                       active={sort === "marketCap"}
                       descending={descending}
@@ -361,14 +378,14 @@ function MarketsView({
                 </th>
                 <th>
                   <button onClick={() => sortRows("volume")}>
-                    24h volume{" "}
+                    {t("asset.volume")}{" "}
                     <SortMark
                       active={sort === "volume"}
                       descending={descending}
                     />
                   </button>
                 </th>
-                <th>Trend</th>
+                <th>{t("table.trend")}</th>
               </tr>
             </thead>
             <tbody>
@@ -384,7 +401,11 @@ function MarketsView({
                             ? "table-star saved"
                             : "table-star"
                         }
-                        aria-label={`${watchlist.includes(asset.symbol) ? "Remove from" : "Add to"} watchlist`}
+                        aria-label={
+                          watchlist.includes(asset.symbol)
+                            ? t("watchlist.removeLabel", { symbol: asset.symbol })
+                            : t("watchlist.addLabel", { symbol: asset.symbol })
+                        }
                         onClick={() => onToggleWatch(asset.symbol)}
                       >
                         <Star
@@ -420,28 +441,13 @@ function MarketsView({
                       {compactMoney.format(asset.volume24h)}
                     </td>
                     <td>
-                      <svg
+                      <Sparkline
+                        values={asset.sparkline}
                         className="market-sparkline"
-                        viewBox="0 0 82 25"
-                        aria-label={`${asset.change >= 0 ? "Up" : "Down"} trend`}
-                      >
-                        <polyline
-                          points={
-                            index % 2 === 0
-                              ? "1,20 12,18 22,19 33,11 44,14 55,7 67,10 81,3"
-                              : "1,4 12,7 22,5 33,14 44,11 55,20 67,17 81,22"
-                          }
-                          fill="none"
-                          stroke={
-                            asset.change >= 0
-                              ? "var(--positive)"
-                              : "var(--negative)"
-                          }
-                          strokeWidth="1.8"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
+                        label={
+                          asset.change >= 0 ? t("table.trendUp") : t("table.trendDown")
+                        }
+                      />
                     </td>
                   </tr>
                 );
@@ -452,8 +458,8 @@ function MarketsView({
         {rows.length === 0 && (
           <div className="table-empty">
             <Search size={19} />
-            <b>No markets match those filters</b>
-            <span>Try a different symbol or clear the watchlist filter.</span>
+            <b>{t("markets.emptyTitle")}</b>
+            <span>{t("markets.emptyText")}</span>
             <button
               className="text-button"
               onClick={() => {
@@ -462,17 +468,16 @@ function MarketsView({
                 setWatchOnly(false);
               }}
             >
-              Clear filters
+              {t("markets.clearFilters")}
             </button>
           </div>
         )}
         <div className="table-footnote">
           <span>
-            <span className="source-dot" /> Binance spot markets · USDT quoted,
-            USD estimates
+            <span className="source-dot" /> {t("markets.source")}
           </span>
           <span>
-            Showing {rows.length} of {assets.length} assets
+            {t("markets.showing", { shown: rows.length, count: assets.length })}
           </span>
         </div>
       </section>
@@ -498,7 +503,80 @@ function SortMark({
   );
 }
 
+const PORTFOLIO_ERROR_CODES = [
+  "authentication_required",
+  "investment_service_unavailable",
+  "investment_portfolio_unavailable",
+  "investment_chart_migration_required",
+] as const;
+
+function portfolioErrors(): Record<string, string> {
+  return Object.fromEntries(
+    PORTFOLIO_ERROR_CODES.map((code) => [
+      code,
+      i18n.t(`portfolio.errors.${code}`),
+    ]),
+  );
+}
+
+const PORTFOLIO_PERIODS = ["1W", "1M", "3M", "1Y", "ALL"] as const;
+type PortfolioPeriod = (typeof PORTFOLIO_PERIODS)[number];
+const PERIOD_TIMEFRAMES: Record<PortfolioPeriod, Timeframe> = {
+  "1W": "1W",
+  "1M": "1M",
+  "3M": "3M",
+  "1Y": "1Y",
+  ALL: "5Y",
+};
+
+/** What the tracked holdings would have been worth over the period. */
+function useHoldingsPerformance(
+  holdings: Holding[],
+  period: PortfolioPeriod,
+) {
+  const symbols = [...new Set(holdings.map((holding) => holding.symbol))].join(",");
+  const [state, setState] = useState<{
+    key: string;
+    series: Record<string, Candle[]>;
+    error: boolean;
+  }>({ key: "", series: {}, error: false });
+  const key = `${symbols}:${period}`;
+  useEffect(() => {
+    if (!symbols) return;
+    let active = true;
+    Promise.all(
+      symbols.split(",").map((symbol) =>
+        fetchCandles(symbol, PERIOD_TIMEFRAMES[period]).then(
+          (candles) => [symbol, candles] as const,
+        ),
+      ),
+    )
+      .then((rows) => active && setState({ key, series: Object.fromEntries(rows), error: false }))
+      .catch(() => active && setState({ key, series: {}, error: true }));
+    return () => {
+      active = false;
+    };
+  }, [key, symbols, period]);
+  const candles = useMemo<Candle[]>(() => {
+    if (state.key !== key) return [];
+    return holdingsHistory(holdings, state.series).map((point) => ({
+      time: point.time,
+      open: point.value,
+      high: point.value,
+      low: point.value,
+      close: point.value,
+      volume: 0,
+    }));
+  }, [holdings, key, state]);
+  return {
+    candles,
+    loading: Boolean(symbols) && state.key !== key,
+    error: state.key === key && state.error,
+  };
+}
+
 function PortfolioView({ assets, prices }: Props) {
+  const { t } = useTranslation();
   const { user, isLoading: authLoading } = useAuth();
   const [managedPortfolio, setManagedPortfolio] =
     useState<ManagedInvestmentPortfolio | null>(null);
@@ -521,17 +599,12 @@ function PortfolioView({ assets, prices }: Props) {
     lastConfirmedCount.current = confirmedTransferCount;
   }, [confirmedTransferCount]);
   const manualManagedRefresh = useRef(false);
-  const [holdings, setHoldings] = useState<Holding[]>(() =>
-    readLocal(PORTFOLIO_STORAGE, [
-      { id: "holding-btc", symbol: "BTC", quantity: 0.18, averageCost: 61_700 },
-      { id: "holding-eth", symbol: "ETH", quantity: 1.2, averageCost: 3_120 },
-      { id: "holding-sol", symbol: "SOL", quantity: 18.4, averageCost: 168 },
-    ]),
-  );
+  const [holdings, setHoldings] = useState<Holding[]>(readHoldings);
   const [newSymbol, setNewSymbol] = useState("BTC");
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState({ quantity: "", averageCost: "" });
-  const [period, setPeriod] = useState("1M");
+  const [period, setPeriod] = useState<PortfolioPeriod>("1M");
+  const performance = useHoldingsPerformance(holdings, period);
   useEffect(() => {
     if (!user) {
       setManagedPortfolio(null);
@@ -543,36 +616,16 @@ function PortfolioView({ assets, prices }: Props) {
     const refreshPortfolio = async (showLoading: boolean) => {
       if (showLoading) setManagedLoading(true);
       try {
-        if (!supabase) throw new Error("Supabase Auth is not configured.");
-        const { data, error } = await supabase.auth.getSession();
-        if (error) throw error;
-        const token = data.session?.access_token;
-        if (!token) throw new Error("Your sign-in session has expired.");
-        const response = await fetch("/api/investments/mine", {
-          headers: { Authorization: `Bearer ${token}` },
-          cache: "no-store",
-        });
-        const result = (await response.json()) as
-          | ManagedInvestmentPortfolio
-          | { error?: string };
-        if (!response.ok) {
-          const errorCode = (result as { error?: string }).error;
-          if (errorCode === "investment_chart_migration_required") {
-            throw new Error(
-              "The investment chart database update is missing. Ask your administrator to apply the account investment migrations in order, including supabase/migrations/202610160001_managed_investment_charts.sql, then refresh your portfolio.",
-            );
-          }
-          throw new Error(
-            errorCode === "investment_portfolio_unavailable"
-              ? "Your investments are temporarily unavailable. Please try again later or contact support if this continues."
-              : "Could not load your investments. Please try again later.",
-          );
-        }
+        const result = await authorizedFetch<ManagedInvestmentPortfolio>(
+          "/api/investments/mine",
+          {},
+          portfolioErrors(),
+        );
         if (active) {
-          setManagedPortfolio(result as ManagedInvestmentPortfolio);
+          setManagedPortfolio(result);
           setManagedError("");
           if (showLoading && manualManagedRefresh.current) {
-            toast.success("Account investments updated");
+            toast.success(i18n.t("portfolio.updated"));
           }
         }
       } catch (requestError) {
@@ -580,7 +633,7 @@ function PortfolioView({ assets, prices }: Props) {
           setManagedError(
             requestError instanceof Error
               ? requestError.message
-              : "Could not load your investments.",
+              : i18n.t("portfolio.loadFailed"),
           );
         }
       } finally {
@@ -602,7 +655,7 @@ function PortfolioView({ assets, prices }: Props) {
     };
   }, [managedRevision, user]);
   useEffect(
-    () => localStorage.setItem(PORTFOLIO_STORAGE, JSON.stringify(holdings)),
+    () => localStorage.setItem(HOLDINGS_STORAGE, JSON.stringify(holdings)),
     [holdings],
   );
   const rows = holdings
@@ -675,37 +728,21 @@ function PortfolioView({ assets, prices }: Props) {
     setEditing(null);
   };
   const removeHolding = (symbol: string) => {
-    if (!window.confirm(`Remove ${symbol} from this portfolio?`)) return;
+    if (!window.confirm(t("portfolio.confirmRemove", { symbol }))) return;
     setHoldings((items) => items.filter((item) => item.symbol !== symbol));
   };
   const circumference = 2 * Math.PI * 48;
   let consumed = 0;
-  const historyPaths: Record<string, string> = {
-    "1W": "M0 102 C44 95 70 112 116 82 S183 75 228 85 S295 45 360 56 S425 64 476 38 S558 42 611 28 S676 33 720 14",
-    "1M": "M0 112 C35 106 46 85 83 96 S130 91 156 77 S209 84 236 69 S286 73 319 58 S365 75 401 52 S446 61 474 45 S526 58 553 33 S607 43 636 27 S683 33 720 13",
-    "3M": "M0 121 C35 116 58 89 92 99 S153 105 186 66 S240 91 284 77 S339 48 378 68 S427 82 467 45 S530 61 566 41 S638 53 670 24 S700 35 720 8",
-    "1Y": "M0 126 C46 92 75 117 123 100 S191 117 239 65 S301 102 351 82 S405 30 463 62 S521 85 560 33 S624 47 665 22 S696 29 720 9",
-    ALL: "M0 130 C52 116 73 98 112 115 S173 88 216 100 S275 61 316 84 S383 49 425 72 S483 34 526 52 S576 65 616 31 S676 43 720 7",
-  };
-  const historyPath = historyPaths[period];
-  const periodLabels: Record<string, string[]> = {
-    "1W": ["Mon", "Wed", "Fri", "Today"],
-    "1M": ["May 1", "May 10", "May 20", "Today"],
-    "3M": ["Mar", "Apr", "May", "Today"],
-    "1Y": ["Jun ’23", "Oct ’23", "Feb ’24", "Today"],
-    ALL: ["2021", "2022", "2023", "Today"],
-  };
-
   return (
     <div className="workspace-view">
       <ScreenHeading
-        eyebrow="YOUR MONEY, CLEARLY"
-        title="Portfolio"
-        description="See your investments above and track personal holdings separately below."
+        eyebrow={t("portfolio.eyebrow")}
+        title={t("nav.portfolio")}
+        description={t("portfolio.description")}
         action={
           <div className="portfolio-heading-actions">
             <span className="local-privacy-label">
-              <Bookmark size={13} /> Personal tracker · local
+              <Bookmark size={13} /> {t("portfolio.localLabel")}
             </span>
             <button
               className="button button-subtle"
@@ -713,7 +750,7 @@ function PortfolioView({ assets, prices }: Props) {
               onClick={() => {
                 if (
                   window.confirm(
-                    "Delete all holdings from this portfolio? This cannot be undone.",
+                    t("portfolio.confirmClear"),
                   )
                 ) {
                   setHoldings([]);
@@ -721,7 +758,7 @@ function PortfolioView({ assets, prices }: Props) {
                 }
               }}
             >
-              <Trash2 size={13} /> Clear tracker
+              <Trash2 size={13} /> {t("portfolio.clearTracker")}
             </button>
           </div>
         }
@@ -729,16 +766,19 @@ function PortfolioView({ assets, prices }: Props) {
       <section className="panel managed-investments-panel">
         <div className="data-panel-heading">
           <div>
-            <span className="eyebrow">ACCOUNT PORTFOLIO</span>
-            <h2>Your investments</h2>
+            <span className="eyebrow">{t("portfolio.accountEyebrow")}</span>
+            <h2>{t("home.preview.title")}</h2>
           </div>
           {user && (
             <div className="managed-investments-actions">
               <Link className="button button-primary button-small" to="/send">
-                <Plus size={13} /> Invest
+                <Plus size={13} /> {t("home.footer.invest")}
               </Link>
-              <Link className="button button-subtle button-small" to="/withdraw">
-                <ArrowUpFromLine size={13} /> Withdraw
+              <Link
+                className="button button-subtle button-small"
+                to="/withdraw"
+              >
+                <ArrowUpFromLine size={13} /> {t("nav.withdraw")}
               </Link>
               <button
                 className="button button-subtle button-small"
@@ -753,27 +793,25 @@ function PortfolioView({ assets, prices }: Props) {
                 ) : (
                   <RefreshCw size={13} />
                 )}
-                Refresh
+                {t("common.refresh")}
               </button>
             </div>
           )}
         </div>
         <p className="managed-investments-description">
-          Confirmed transfers appear here as investments, valued in USD. Values
-          are managed by Northstar and may change over time; they are not live
-          market prices or guaranteed returns.
+          {t("portfolio.managedDescription")}
         </p>
         {user && <PendingTransfers deposits={myDeposits} />}
         {authLoading || managedLoading ? (
           <div className="managed-investments-message" role="status">
             <LoaderCircle className="admin-spinner" size={16} />
-            Loading account investments…
+            {t("portfolio.loading")}
           </div>
         ) : !user ? (
           <div className="managed-investments-message">
-            <span>Sign in to see investments assigned to your account.</span>
+            <span>{t("portfolio.signInPrompt")}</span>
             <Link className="button button-primary button-small" to="/account">
-              Sign in
+              {t("common.signIn")}
             </Link>
           </div>
         ) : managedError ? (
@@ -784,11 +822,11 @@ function PortfolioView({ assets, prices }: Props) {
           <>
             <div className="managed-investment-totals">
               <div>
-                <span>Invested</span>
+                <span>{t("portfolio.invested")}</span>
                 <b>{money.format(managedPortfolio.totals.investedUsd)}</b>
               </div>
               <div>
-                <span>Return assigned</span>
+                <span>{t("portfolio.returnAssigned")}</span>
                 <b
                   className={
                     managedPortfolio.totals.returnUsd >= 0
@@ -801,22 +839,20 @@ function PortfolioView({ assets, prices }: Props) {
                 </b>
               </div>
               <div>
-                <span>Current assigned value</span>
+                <span>{t("portfolio.currentValue")}</span>
                 <b>{money.format(managedPortfolio.totals.totalUsd)}</b>
               </div>
             </div>
-            <InvestmentPriceChart
-              investments={managedPortfolio.investments}
-            />
+            <InvestmentPriceChart investments={managedPortfolio.investments} />
             <div className="table-scroll">
               <table className="market-table managed-investments-table">
                 <thead>
                   <tr>
-                    <th>Asset</th>
-                    <th>Invested (USD)</th>
-                    <th>Return assigned (USD)</th>
-                    <th>Total value (USD)</th>
-                    <th>Last updated</th>
+                    <th>{t("watchlist.asset")}</th>
+                    <th>{t("portfolio.investedUsd")}</th>
+                    <th>{t("portfolio.returnUsd")}</th>
+                    <th>{t("portfolio.totalUsd")}</th>
+                    <th>{t("portfolio.lastUpdated")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -840,7 +876,9 @@ function PortfolioView({ assets, prices }: Props) {
                         <b>{money.format(Number(investment.totalUsd))}</b>
                       </td>
                       <td>
-                        {new Date(investment.updatedAt).toLocaleDateString()}
+                        {dateFormat({ dateStyle: "medium" }).format(
+                          new Date(investment.updatedAt),
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -851,18 +889,17 @@ function PortfolioView({ assets, prices }: Props) {
         ) : (
           <div className="managed-investments-message">
             <span>
-              No investments yet. Send USDT, BTC, ETH or SOL and it's added
-              here once an admin confirms the transfer.
+              {t("portfolio.empty")}
             </span>
             <Link className="button button-primary button-small" to="/send">
-              <Plus size={13} /> Invest
+              <Plus size={13} /> {t("home.footer.invest")}
             </Link>
           </div>
         )}
       </section>
       <div className="portfolio-overview-grid">
         <section className="panel portfolio-value-card">
-          <span className="eyebrow">TOTAL PORTFOLIO VALUE</span>
+          <span className="eyebrow">{t("portfolio.totalValue")}</span>
           <div className="portfolio-big-value">{money.format(totalValue)}</div>
           <div
             className={
@@ -877,68 +914,21 @@ function PortfolioView({ assets, prices }: Props) {
               <ArrowDownRight size={15} />
             )}
             {money.format(Math.abs(totalPnl))} ({pnlPercent >= 0 ? "+" : "−"}
-            {Math.abs(pnlPercent).toFixed(2)}%) <span>all time</span>
+            {Math.abs(pnlPercent).toFixed(2)}%) <span>{t("portfolio.allTime")}</span>
           </div>
-          <div className="performance-chart">
-            <svg
-              viewBox="0 0 720 150"
-              preserveAspectRatio="none"
-              role="img"
-              aria-label="Illustrative portfolio performance trend"
-            >
-              <defs>
-                <linearGradient
-                  id="portfolio-workspace-fill"
-                  x1="0"
-                  x2="0"
-                  y1="0"
-                  y2="1"
-                >
-                  <stop
-                    offset="0"
-                    stopColor="var(--chart-line)"
-                    stopOpacity=".18"
-                  />
-                  <stop
-                    offset="1"
-                    stopColor="var(--chart-line)"
-                    stopOpacity="0"
-                  />
-                </linearGradient>
-              </defs>
-              {[0, 1, 2].map((line) => (
-                <line
-                  key={line}
-                  x1="0"
-                  x2="720"
-                  y1={35 + line * 46}
-                  y2={35 + line * 46}
-                  className="chart-gridline"
-                />
-              ))}
-              <path
-                d={`${historyPath} V150 H0Z`}
-                fill="url(#portfolio-workspace-fill)"
-              />
-              <path
-                d={historyPath}
-                fill="none"
-                stroke="var(--chart-line)"
-                strokeWidth="2.5"
-                vectorEffect="non-scaling-stroke"
-              />
-            </svg>
-            <div className="performance-x-labels">
-              {periodLabels[period].map((label) => (
-                <span key={label}>{label}</span>
-              ))}
-            </div>
-          </div>
-          <div className="performance-periods">
-            {["1W", "1M", "3M", "1Y", "ALL"].map((value) => (
+          <MarketChart
+            candles={performance.candles}
+            loading={performance.loading}
+            error={performance.error}
+            label={t("nav.portfolio")}
+            className="performance-chart"
+          />
+          <div className="performance-periods" role="group" aria-label={t("chart.timeframe")}>
+            {PORTFOLIO_PERIODS.map((value) => (
               <button
                 key={value}
                 className={period === value ? "active" : ""}
+                aria-pressed={period === value}
                 onClick={() => setPeriod(value)}
               >
                 {value}
@@ -946,15 +936,14 @@ function PortfolioView({ assets, prices }: Props) {
             ))}
           </div>
           <span className="portfolio-illustrative-note">
-            Personal tracker history is illustrative. Its holdings and cost
-            basis stay on this device.
+            {t("portfolio.illustrative")}
           </span>
         </section>
         <section className="panel allocation-card">
           <div className="section-heading">
             <div>
-              <span className="eyebrow">BY ASSET</span>
-              <h2>Allocation</h2>
+              <span className="eyebrow">{t("portfolio.byAsset")}</span>
+              <h2>{t("portfolio.allocation")}</h2>
             </div>
           </div>
           {rows.length ? (
@@ -964,7 +953,7 @@ function PortfolioView({ assets, prices }: Props) {
                   className="allocation-donut"
                   viewBox="0 0 120 120"
                   role="img"
-                  aria-label="Portfolio allocation by asset"
+                  aria-label={t("portfolio.allocationLabel")}
                 >
                   <circle
                     cx="60"
@@ -1008,7 +997,7 @@ function PortfolioView({ assets, prices }: Props) {
                     textAnchor="middle"
                     className="donut-caption"
                   >
-                    TOTAL VALUE
+                    {t("portfolio.totalValueShort")}
                   </text>
                 </svg>
                 <div className="allocation-legend">
@@ -1032,12 +1021,12 @@ function PortfolioView({ assets, prices }: Props) {
           ) : (
             <div className="table-empty">
               <Bookmark size={18} />
-              <b>No holdings yet</b>
-              <span>Add an asset below to see allocation.</span>
+              <b>{t("portfolio.noHoldings")}</b>
+              <span>{t("portfolio.noHoldingsText")}</span>
             </div>
           )}
           <div className="allocation-total-row">
-            <span>Invested</span>
+            <span>{t("portfolio.invested")}</span>
             <b>{money.format(totalCost)}</b>
           </div>
         </section>
@@ -1045,14 +1034,15 @@ function PortfolioView({ assets, prices }: Props) {
       <section className="panel data-panel holdings-panel">
         <div className="data-panel-heading">
           <div>
-            <span className="eyebrow">POSITIONS</span>
+            <span className="eyebrow">{t("portfolio.positions")}</span>
             <h2>
-              Your holdings <span className="watch-count">{rows.length}</span>
+              {t("portfolio.holdings")}{" "}
+              <span className="watch-count">{rows.length}</span>
             </h2>
           </div>
           <div className="add-holding-control">
             <label className="sr-only" htmlFor="new-holding">
-              Asset to add
+              {t("portfolio.assetToAdd")}
             </label>
             <select
               id="new-holding"
@@ -1066,7 +1056,7 @@ function PortfolioView({ assets, prices }: Props) {
               ))}
             </select>
             <button className="button button-primary" onClick={addHolding}>
-              <Plus size={14} /> Add asset
+              <Plus size={14} /> {t("portfolio.addAsset")}
             </button>
           </div>
         </div>
@@ -1074,13 +1064,13 @@ function PortfolioView({ assets, prices }: Props) {
           <table className="market-table holdings-table">
             <thead>
               <tr>
-                <th>Asset</th>
-                <th>Quantity</th>
-                <th>Avg. cost</th>
-                <th>Current price</th>
-                <th>Market value</th>
-                <th>Unrealized P&amp;L</th>
-                <th aria-label="Actions" />
+                <th>{t("watchlist.asset")}</th>
+                <th>{t("portfolio.quantity")}</th>
+                <th>{t("portfolio.avgCost")}</th>
+                <th>{t("portfolio.currentPrice")}</th>
+                <th>{t("portfolio.marketValue")}</th>
+                <th>{t("portfolio.pnl")}</th>
+                <th aria-label={t("table.actions")} />
               </tr>
             </thead>
             <tbody>
@@ -1102,7 +1092,7 @@ function PortfolioView({ assets, prices }: Props) {
                         type="number"
                         min="0.000001"
                         step="any"
-                        aria-label={`${holding.symbol} quantity`}
+                        aria-label={t("portfolio.quantityLabel", { symbol: holding.symbol })}
                         value={draft.quantity}
                         onChange={(event) =>
                           setDraft((value) => ({
@@ -1122,7 +1112,7 @@ function PortfolioView({ assets, prices }: Props) {
                         type="number"
                         min="0.01"
                         step="any"
-                        aria-label={`${holding.symbol} average cost`}
+                        aria-label={t("portfolio.avgCostLabel", { symbol: holding.symbol })}
                         value={draft.averageCost}
                         onChange={(event) =>
                           setDraft((value) => ({
@@ -1156,14 +1146,14 @@ function PortfolioView({ assets, prices }: Props) {
                     <div className="row-actions">
                       {editing === holding.symbol ? (
                         <button
-                          aria-label={`Save ${holding.symbol}`}
+                          aria-label={t("portfolio.saveLabel", { symbol: holding.symbol })}
                           onClick={() => saveEdit(holding.symbol)}
                         >
                           <Check size={14} />
                         </button>
                       ) : (
                         <button
-                          aria-label={`Edit ${holding.symbol}`}
+                          aria-label={t("portfolio.editLabel", { symbol: holding.symbol })}
                           onClick={() =>
                             startEdit(
                               holding.symbol,
@@ -1176,7 +1166,7 @@ function PortfolioView({ assets, prices }: Props) {
                         </button>
                       )}
                       <button
-                        aria-label={`Remove ${holding.symbol}`}
+                        aria-label={t("portfolio.removeLabel", { symbol: holding.symbol })}
                         onClick={() => removeHolding(holding.symbol)}
                       >
                         <Trash2 size={14} />
@@ -1191,16 +1181,14 @@ function PortfolioView({ assets, prices }: Props) {
         {rows.length === 0 && (
           <div className="table-empty compact-empty">
             <Bookmark size={18} />
-            <b>Your portfolio is ready for its first holding</b>
-            <span>Choose an asset above to add it.</span>
+            <b>{t("portfolio.readyTitle")}</b>
+            <span>{t("portfolio.readyText")}</span>
           </div>
         )}
         <div className="table-footnote">
+          <span>{t("portfolio.storedLocally")}</span>
           <span>
-            Personal tracker data is stored in this browser only.
-          </span>
-          <span>
-            <span className="source-dot" /> Live prices · Binance
+            <span className="source-dot" /> {t("portfolio.livePrices")}
           </span>
         </div>
       </section>
@@ -1224,6 +1212,7 @@ function didAlertTrigger(
 }
 
 function AlertsView({ assets, prices, onAlertCountChange }: Props) {
+  const { t } = useTranslation();
   const [alerts, setAlerts] = useState<PriceAlert[]>(() =>
     readLocal(ALERT_STORAGE, [
       {
@@ -1307,12 +1296,13 @@ function AlertsView({ assets, prices, onAlertCountChange }: Props) {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
   const removeAlert = (alert: PriceAlert) => {
-    if (!window.confirm(`Delete the ${alert.symbol} alert?`)) return;
+    if (!window.confirm(t("alerts.confirmDelete", { symbol: alert.symbol })))
+      return;
     setAlerts((items) => items.filter((item) => item.id !== alert.id));
     if (editingId === alert.id) setEditingId(null);
   };
   const clearAll = () => {
-    if (!window.confirm("Delete all of your alerts? This cannot be undone."))
+    if (!window.confirm(t("alerts.confirmClear")))
       return;
     setAlerts([]);
     setEditingId(null);
@@ -1327,22 +1317,22 @@ function AlertsView({ assets, prices, onAlertCountChange }: Props) {
     (alert) => showTriggered || !didAlertTrigger(alert, assets, prices),
   );
   const kindLabel: Record<AlertKind, string> = {
-    above: "Price rises above",
-    below: "Price falls below",
-    up: "Rises by (%)",
-    down: "Falls by (%)",
+    above: t("alerts.kind.above"),
+    below: t("alerts.kind.below"),
+    up: t("alerts.kind.up"),
+    down: t("alerts.kind.down"),
   };
 
   return (
     <div className="workspace-view">
       <ScreenHeading
-        eyebrow="STAY INFORMED, NOT DISTRACTED"
-        title="Price alerts"
-        description="Set a clear threshold and let the market come to you."
+        eyebrow={t("alerts.eyebrow")}
+        title={t("alerts.title")}
+        description={t("alerts.description")}
         action={
           alerts.length > 0 && (
             <button className="button button-subtle" onClick={clearAll}>
-              <Trash2 size={14} /> Clear all
+              <Trash2 size={14} /> {t("alerts.clearAll")}
             </button>
           )
         }
@@ -1353,48 +1343,48 @@ function AlertsView({ assets, prices, onAlertCountChange }: Props) {
             <Bell size={17} />
           </div>
           <div>
-            <span>Active alerts</span>
+            <span>{t("alerts.active")}</span>
             <b>{activeCount}</b>
           </div>
-          <small>Ready to notify</small>
+          <small>{t("alerts.activeHint")}</small>
         </div>
         <div className="panel alert-summary">
           <div className="alert-summary-icon triggered-icon">
             <Activity size={17} />
           </div>
           <div>
-            <span>Currently reached</span>
+            <span>{t("alerts.reached")}</span>
             <b>{triggered.length}</b>
           </div>
-          <small>Based on latest price</small>
+          <small>{t("alerts.reachedHint")}</small>
         </div>
         <div className="panel alert-summary">
           <div className="alert-summary-icon">
             <Clock3 size={17} />
           </div>
           <div>
-            <span>Delivery</span>
-            <b>In app</b>
+            <span>{t("alerts.delivery")}</span>
+            <b>{t("alerts.inApp")}</b>
           </div>
-          <small>Verified subscribers can also get email alerts</small>
+          <small>{t("alerts.deliveryHint")}</small>
         </div>
       </div>
       <div className="alerts-layout">
         <section className="panel alert-form-card">
           <div className="section-heading">
             <div>
-              <span className="eyebrow">NEW NOTIFICATION</span>
-              <h2>{editingId ? "Edit alert" : "Create an alert"}</h2>
+              <span className="eyebrow">{t("alerts.newEyebrow")}</span>
+              <h2>{editingId ? t("alerts.editTitle") : t("alerts.createTitle")}</h2>
             </div>
             <div className="alert-form-icon">
               <Bell size={17} />
             </div>
           </div>
           <p className="form-intro">
-            Choose a market and a price move worth your attention.
+            {t("alerts.formIntro")}
           </p>
           <label className="form-field">
-            <span>Asset</span>
+            <span>{t("watchlist.asset")}</span>
             <select
               value={symbol}
               onChange={(event) => setSymbol(event.target.value)}
@@ -1407,22 +1397,22 @@ function AlertsView({ assets, prices, onAlertCountChange }: Props) {
             </select>
           </label>
           <label className="form-field">
-            <span>Alert condition</span>
+            <span>{t("alerts.condition")}</span>
             <select
               value={kind}
               onChange={(event) => setKind(event.target.value as AlertKind)}
             >
-              <option value="above">Price rises above</option>
-              <option value="below">Price falls below</option>
-              <option value="up">Rises by (%)</option>
-              <option value="down">Falls by (%)</option>
+              <option value="above">{kindLabel.above}</option>
+              <option value="below">{kindLabel.below}</option>
+              <option value="up">{kindLabel.up}</option>
+              <option value="down">{kindLabel.down}</option>
             </select>
           </label>
           <label className="form-field">
             <span>
               {kind === "above" || kind === "below"
-                ? "Target price (USD)"
-                : "Change (%)"}
+                ? t("alerts.targetPrice")
+                : t("alerts.changePercent")}
             </span>
             <div className="input-with-affix">
               <input
@@ -1443,7 +1433,7 @@ function AlertsView({ assets, prices, onAlertCountChange }: Props) {
             </div>
           </label>
           <div className="current-price-hint">
-            <span>Current {symbol} price</span>
+            <span>{t("alerts.currentPrice", { symbol })}</span>
             <b>{money.format(current)}</b>
           </div>
           <button
@@ -1452,7 +1442,7 @@ function AlertsView({ assets, prices, onAlertCountChange }: Props) {
             onClick={saveAlert}
           >
             {editingId ? <Check size={15} /> : <Plus size={15} />}
-            {editingId ? "Save changes" : "Create alert"}
+            {editingId ? t("common.saveChanges") : t("alerts.create")}
           </button>
           {editingId && (
             <button
@@ -1462,31 +1452,30 @@ function AlertsView({ assets, prices, onAlertCountChange }: Props) {
                 setTarget("");
               }}
             >
-              Cancel editing
+              {t("alerts.cancelEdit")}
             </button>
           )}
           <div className="alert-privacy-note">
             <CircleHelp size={14} />
             <span>
-              In-app alerts stay on this device and are checked while the
-              dashboard is open. For background email alerts, verify your
-              address and enable Price alert emails in email preferences.
+              {t("alerts.privacy")}
             </span>
           </div>
         </section>
         <section className="panel alert-list-card">
           <div className="section-heading">
             <div>
-              <span className="eyebrow">YOUR RULES</span>
+              <span className="eyebrow">{t("alerts.rulesEyebrow")}</span>
               <h2>
-                Alerts <span className="watch-count">{alerts.length}</span>
+                {t("nav.alerts")}{" "}
+                <span className="watch-count">{alerts.length}</span>
               </h2>
             </div>
             <button
               className={showTriggered ? "filter-pill active" : "filter-pill"}
               onClick={() => setShowTriggered(!showTriggered)}
             >
-              Show reached
+              {t("alerts.showReached")}
             </button>
           </div>
           {visibleAlerts.length ? (
@@ -1520,16 +1509,20 @@ function AlertsView({ assets, prices, onAlertCountChange }: Props) {
                           }
                         >
                           {reached
-                            ? "Threshold reached"
+                            ? t("alerts.state.reached")
                             : alert.enabled
-                              ? "Active"
-                              : "Paused"}
+                              ? t("alerts.state.active")
+                              : t("alerts.state.paused")}
                         </span>
                       </div>
                       <p>
                         {kindLabel[alert.kind]} <strong>{valueLabel}</strong>
                       </p>
-                      <small>Current price {money.format(currentPrice)}</small>
+                      <small>
+                        {t("alerts.currentPriceValue", {
+                          price: money.format(currentPrice),
+                        })}
+                      </small>
                     </div>
                     <div className="alert-actions">
                       <button
@@ -1540,7 +1533,11 @@ function AlertsView({ assets, prices, onAlertCountChange }: Props) {
                         }
                         role="switch"
                         aria-checked={alert.enabled}
-                        aria-label={`${alert.enabled ? "Pause" : "Enable"} ${asset.symbol} alert`}
+                        aria-label={
+                          alert.enabled
+                            ? t("alerts.pauseLabel", { symbol: asset.symbol })
+                            : t("alerts.enableLabel", { symbol: asset.symbol })
+                        }
                         onClick={() =>
                           setAlerts((items) =>
                             items.map((item) =>
@@ -1554,13 +1551,13 @@ function AlertsView({ assets, prices, onAlertCountChange }: Props) {
                         <i />
                       </button>
                       <button
-                        aria-label={`Edit ${asset.symbol} alert`}
+                        aria-label={t("alerts.editLabel", { symbol: asset.symbol })}
                         onClick={() => editAlert(alert)}
                       >
                         <Edit3 size={14} />
                       </button>
                       <button
-                        aria-label={`Delete ${asset.symbol} alert`}
+                        aria-label={t("alerts.deleteLabel", { symbol: asset.symbol })}
                         onClick={() => removeAlert(alert)}
                       >
                         <Trash2 size={14} />
@@ -1575,25 +1572,27 @@ function AlertsView({ assets, prices, onAlertCountChange }: Props) {
               <div className="alert-empty-icon">
                 <Bell size={19} />
               </div>
-              <b>{showTriggered ? "No reached alerts" : "No alerts yet"}</b>
+              <b>
+                {showTriggered ? t("alerts.noneReached") : t("alerts.none")}
+              </b>
               <span>
                 {showTriggered
-                  ? "Reached thresholds will appear here."
-                  : "Create a price or percentage alert to keep an eye on a move."}
+                  ? t("alerts.noneReachedText")
+                  : t("alerts.noneText")}
               </span>
               <button
                 className="text-button"
                 onClick={() => setShowTriggered(false)}
               >
-                View all alerts <ArrowRight size={13} />
+                {t("alerts.viewAll")} <ArrowRight size={13} />
               </button>
             </div>
           )}
           <div className="alert-list-footnote">
             <span>
-              <span className="source-dot" /> Prices refresh with market data
+              <span className="source-dot" /> {t("alerts.refreshNote")}
             </span>
-            <span>{triggered.length} reached</span>
+            <span>{t("alerts.reachedCount", { count: triggered.length })}</span>
           </div>
         </section>
       </div>
@@ -1608,6 +1607,7 @@ function ScreenerView({
   onToggleWatch,
   onOpenAsset,
 }: Props) {
+  const { t } = useTranslation();
   const [minimumPrice, setMinimumPrice] = useState("");
   const [maximumPrice, setMaximumPrice] = useState("");
   const [minimumChange, setMinimumChange] = useState("");
@@ -1685,23 +1685,23 @@ function ScreenerView({
   return (
     <div className="workspace-view">
       <ScreenHeading
-        eyebrow="DISCOVER YOUR NEXT SIGNAL"
-        title="Screener"
-        description="Filter the market by price action and find assets worth a closer look."
+        eyebrow={t("screener.eyebrow")}
+        title={t("nav.screener")}
+        description={t("screener.description")}
         action={
           <button
             className="button button-subtle"
             onClick={() => setSaveOpen(!saveOpen)}
           >
-            <Bookmark size={14} /> Save screen
+            <Bookmark size={14} /> {t("screener.save")}
           </button>
         }
       />
       {saveOpen && (
         <section className="panel save-filter-panel">
           <div>
-            <span className="eyebrow">SAVE THESE FILTERS</span>
-            <b>Name this screen</b>
+            <span className="eyebrow">{t("screener.saveEyebrow")}</span>
+            <b>{t("screener.nameTitle")}</b>
           </div>
           <input
             value={filterName}
@@ -1709,19 +1709,19 @@ function ScreenerView({
             onKeyDown={(event) => {
               if (event.key === "Enter") saveFilter();
             }}
-            placeholder="e.g. Large cap gainers"
-            aria-label="Saved screen name"
+            placeholder={t("screener.namePlaceholder")}
+            aria-label={t("screener.nameLabel")}
           />
           <button
             className="button button-primary"
             disabled={!filterName.trim()}
             onClick={saveFilter}
           >
-            <Check size={14} /> Save screen
+            <Check size={14} /> {t("screener.save")}
           </button>
           <button
             className="icon-button"
-            aria-label="Cancel saving screen"
+            aria-label={t("screener.cancelSave")}
             onClick={() => setSaveOpen(false)}
           >
             <X size={16} />
@@ -1732,39 +1732,39 @@ function ScreenerView({
         <section className="panel screener-filters">
           <div className="section-heading">
             <div>
-              <span className="eyebrow">NARROW THE FIELD</span>
+              <span className="eyebrow">{t("screener.filtersEyebrow")}</span>
               <h2>
-                <Filter size={15} /> Filters
+                <Filter size={15} /> {t("screener.filters")}
               </h2>
             </div>
             <button className="text-button" onClick={clear}>
-              Reset
+              {t("screener.reset")}
             </button>
           </div>
           <label className="form-field">
-            <span>Price range (USD)</span>
+            <span>{t("screener.priceRange")}</span>
             <div className="range-inputs">
               <input
                 type="number"
                 min="0"
                 value={minimumPrice}
                 onChange={(event) => setMinimumPrice(event.target.value)}
-                placeholder="Min"
-                aria-label="Minimum price"
+                placeholder={t("screener.min")}
+                aria-label={t("screener.minPrice")}
               />
-              <span>to</span>
+              <span>{t("screener.to")}</span>
               <input
                 type="number"
                 min="0"
                 value={maximumPrice}
                 onChange={(event) => setMaximumPrice(event.target.value)}
-                placeholder="Max"
-                aria-label="Maximum price"
+                placeholder={t("screener.max")}
+                aria-label={t("screener.maxPrice")}
               />
             </div>
           </label>
           <label className="form-field">
-            <span>Minimum 24h move</span>
+            <span>{t("screener.minMove")}</span>
             <div className="input-with-affix">
               <input
                 type="number"
@@ -1772,51 +1772,51 @@ function ScreenerView({
                 step="0.1"
                 value={minimumChange}
                 onChange={(event) => setMinimumChange(event.target.value)}
-                placeholder="Any"
+                placeholder={t("screener.any")}
               />
               <span>%</span>
             </div>
           </label>
           <label className="form-field">
-            <span>Direction</span>
+            <span>{t("screener.direction")}</span>
             <select
               value={direction}
               onChange={(event) =>
                 setDirection(event.target.value as SavedFilter["direction"])
               }
             >
-              <option value="all">All assets</option>
-              <option value="gainers">Gainers only</option>
-              <option value="losers">Losers only</option>
+              <option value="all">{t("markets.allAssets")}</option>
+              <option value="gainers">{t("screener.gainersOnly")}</option>
+              <option value="losers">{t("screener.losersOnly")}</option>
             </select>
           </label>
           <label className="form-field">
-            <span>Minimum market cap (USD)</span>
+            <span>{t("screener.minCap")}</span>
             <input
               type="number"
               min="0"
               value={minimumMarketCap}
               onChange={(event) => setMinimumMarketCap(event.target.value)}
-              placeholder="Any"
+              placeholder={t("screener.any")}
             />
           </label>
           <label className="form-field">
-            <span>Minimum 24h volume (USD)</span>
+            <span>{t("screener.minVolume")}</span>
             <input
               type="number"
               min="0"
               value={minimumVolume}
               onChange={(event) => setMinimumVolume(event.target.value)}
-              placeholder="Any"
+              placeholder={t("screener.any")}
             />
           </label>
           <div className="filter-result-count">
-            <SlidersHorizontal size={14} /> <b>{rows.length}</b> matching{" "}
-            {rows.length === 1 ? "asset" : "assets"}
+            <SlidersHorizontal size={14} /> <b>{rows.length}</b>{" "}
+            {t("screener.matching", { count: rows.length })}
           </div>
           <div className="saved-screens">
             <div className="saved-screens-heading">
-              <b>Saved screens</b>
+              <b>{t("screener.saved")}</b>
               <span>{saved.length}</span>
             </div>
             {saved.length ? (
@@ -1827,10 +1827,12 @@ function ScreenerView({
                     <span>{filter.name}</span>
                   </button>
                   <button
-                    aria-label={`Delete ${filter.name}`}
+                    aria-label={t("screener.deleteLabel", { name: filter.name })}
                     onClick={() => {
                       if (
-                        window.confirm(`Delete saved screen “${filter.name}”?`)
+                        window.confirm(
+                          t("screener.confirmDelete", { name: filter.name }),
+                        )
                       )
                         setSaved((items) =>
                           items.filter((item) => item.id !== filter.id),
@@ -1843,7 +1845,7 @@ function ScreenerView({
               ))
             ) : (
               <p className="saved-empty">
-                Save a useful filter combination to return to it later.
+                {t("screener.savedEmpty")}
               </p>
             )}
           </div>
@@ -1851,22 +1853,24 @@ function ScreenerView({
         <section className="panel data-panel screener-results">
           <div className="data-panel-heading">
             <div>
-              <span className="eyebrow">LIVE UNIVERSE</span>
-              <h2>Matching assets</h2>
+              <span className="eyebrow">{t("screener.resultsEyebrow")}</span>
+              <h2>{t("screener.results")}</h2>
             </div>
             <div className="screener-sort">
-              <span>Sort by</span>
+              <span>{t("screener.sortBy")}</span>
               <select
                 value={sort}
                 onChange={(event) => setSort(event.target.value as typeof sort)}
               >
-                <option value="change">24h change</option>
-                <option value="price">Price</option>
-                <option value="volume">24h volume</option>
+                <option value="change">{t("watchlist.change24h")}</option>
+                <option value="price">{t("table.price")}</option>
+                <option value="volume">{t("asset.volume")}</option>
               </select>
               <button
                 className="icon-button small-icon"
-                aria-label={`Sort ${descending ? "ascending" : "descending"}`}
+                aria-label={
+                  descending ? t("screener.sortAscending") : t("screener.sortDescending")
+                }
                 onClick={() => setDescending(!descending)}
               >
                 {descending ? <ArrowDown size={14} /> : <ArrowUp size={14} />}
@@ -1877,11 +1881,11 @@ function ScreenerView({
             <table className="market-table screener-table">
               <thead>
                 <tr>
-                  <th>Asset</th>
-                  <th>Price</th>
-                  <th>24h change</th>
-                  <th>24h volume</th>
-                  <th>Action</th>
+                  <th>{t("watchlist.asset")}</th>
+                  <th>{t("table.price")}</th>
+                  <th>{t("watchlist.change24h")}</th>
+                  <th>{t("asset.volume")}</th>
+                  <th>{t("table.action")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1923,8 +1927,8 @@ function ScreenerView({
                           <Plus size={13} />
                         )}
                         {watchlist.includes(asset.symbol)
-                          ? "Watching"
-                          : "Watch"}
+                          ? t("screener.watching")
+                          : t("screener.watch")}
                       </button>
                     </td>
                   </tr>
@@ -1935,17 +1939,17 @@ function ScreenerView({
           {rows.length === 0 && (
             <div className="table-empty">
               <Search size={19} />
-              <b>No assets meet these criteria</b>
-              <span>Broaden your price range or reset your filters.</span>
+              <b>{t("screener.emptyTitle")}</b>
+              <span>{t("screener.emptyText")}</span>
               <button className="text-button" onClick={clear}>
-                Reset filters
+                {t("screener.resetFilters")}
               </button>
             </div>
           )}
           <div className="table-footnote">
-            <span>Market data by Binance · indicative USD value</span>
+            <span>{t("screener.source")}</span>
             <span>
-              {rows.length} of {assets.length} assets
+              {t("screener.count", { shown: rows.length, count: assets.length })}
             </span>
           </div>
         </section>
@@ -1953,8 +1957,7 @@ function ScreenerView({
       <div className="screener-note">
         <CircleHelp size={15} />
         <span>
-          Screener results are a starting point for research, not
-          recommendations. Criteria and saved screens are stored locally.
+          {t("screener.note")}
         </span>
       </div>
     </div>

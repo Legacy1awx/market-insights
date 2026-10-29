@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { ChevronDown } from "lucide-react";
 import { networkLabel } from "@shared/deposit-assets";
-import { STATUS_LABELS, formatDateTime } from "@/lib/deposits";
+import { formatDateTime } from "@/lib/deposits";
 import { cn } from "@/lib/utils";
 import { TokenIcon } from "./TokenIcon";
 import { TransferDetails, type TransferRecord } from "./TransferDetails";
@@ -11,8 +12,11 @@ export function TransferStatusBadge({
 }: {
   status: TransferRecord["status"];
 }) {
+  const { t } = useTranslation();
   return (
-    <span className={`transfer-status ${status}`}>{STATUS_LABELS[status]}</span>
+    <span className={`transfer-status ${status}`}>
+      {t(`status.deposit.${status}`)}
+    </span>
   );
 }
 

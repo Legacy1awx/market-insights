@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Check, Copy } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -15,6 +16,7 @@ export function CopyButton({
   className?: string;
   compact?: boolean;
 }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -28,10 +30,10 @@ export function CopyButton({
       if (!navigator.clipboard) throw new Error("Clipboard unavailable");
       await navigator.clipboard.writeText(value);
       setCopied(true);
-      toast.success(`${label} copied`);
+      toast.success(t("copy.copied", { label }));
     } catch {
-      toast.error(`Couldn't copy the ${label.toLowerCase()}`, {
-        description: "Select the text and copy it manually.",
+      toast.error(t("copy.failed", { label }), {
+        description: t("copy.failedText"),
       });
     }
   };
@@ -45,10 +47,10 @@ export function CopyButton({
         className,
       )}
       onClick={() => void copy()}
-      aria-label={`Copy ${label}`}
+      aria-label={t("copy.label", { label })}
     >
       {copied ? <Check size={14} /> : <Copy size={14} />}
-      {!compact && (copied ? "Copied" : "Copy")}
+      {!compact && (copied ? t("copy.done") : t("copy.action"))}
     </button>
   );
 }

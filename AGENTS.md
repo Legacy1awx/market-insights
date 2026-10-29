@@ -67,6 +67,27 @@ className={cn(
 )}
 ```
 
+### Translations (i18n)
+
+User-facing text is translated with `react-i18next`. Don't hard-code UI strings.
+
+- Dictionaries live in `client/i18n/locales/` (`en.ts` is the source; `es`, `fr`, `de`, `pt`, `zh` must have the same keys — the `Translation` type enforces it).
+- In components: `const { t } = useTranslation();` then `t("section.key", { name })`. Outside React (hooks' toasts, `lib/`), use `i18n.t` from `@/i18n`.
+- Plurals use `_one` / `_other` suffixes with a `count` option; inline markup uses `<Trans i18nKey="…" components={{ b: <b /> }} />`.
+- Format money and dates with `formatUsd`, `usdFormat`, `numberFormat`, `formatDate`, `dateFormat` from `@/i18n/format` (never `Intl.*("en-US")`).
+- To add a language: add it to `client/i18n/languages.ts`, create `locales/<code>.ts`, and register its loader in `client/i18n/index.ts`. RTL codes are listed in `languages.ts`.
+- `pnpm test` runs `client/i18n/locales.spec.ts`, which fails on missing keys, mismatched `{{placeholders}}`, or `t()` keys that don't exist.
+- The admin workspace (`Admin.tsx`, `AdminUserProfile.tsx`, `components/admin/`) is not translated yet.
+
+### Market data
+
+All prices and charts come from the live market. Never hard-code market numbers.
+
+- `client/lib/market.ts` is the single data layer: Binance's public market-data hosts (`data-api.binance.vision`, `data-stream.binance.vision`) for prices, candles and the live stream, plus CoinGecko for market caps, supply, 7-day sparklines and global totals. CoinGecko is also the fallback where Binance is blocked. Requests are cached briefly and shared.
+- In components, use the hooks in `client/hooks/use-market.ts` (`useLiveTickers`, `useCandles`, `useAssetMarkets`, `useGlobalMarket`, `useFearGreed`).
+- Charts: `components/market/MarketChart.tsx` (interactive, responsive) and `components/market/Sparkline.tsx`. Labels are HTML, not SVG text, so they stay readable on phones.
+- Show `—` while a value is loading or unavailable; never fall back to made-up numbers. The dashboard's "simulation mode" (Settings) is the only place sample prices are used, and it is off by default.
+
 ### Express Server Integration
 
 - **Development**: Single port (8080) for both frontend/backend

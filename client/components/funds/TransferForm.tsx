@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { CircleAlert, LoaderCircle, Send } from "lucide-react";
 import type { DepositAsset } from "@shared/deposit-assets";
 import { submitDeposit, type Deposit } from "@/lib/deposits";
@@ -11,6 +12,7 @@ export function TransferForm({
   asset: DepositAsset;
   onSubmitted: (deposit: Deposit) => void;
 }) {
+  const { t } = useTranslation();
   const [amount, setAmount] = useState("");
   const [transactionHash, setTransactionHash] = useState("");
   const [senderAddress, setSenderAddress] = useState("");
@@ -37,7 +39,7 @@ export function TransferForm({
       setError(
         submitError instanceof Error
           ? submitError.message
-          : "Your transfer couldn't be submitted.",
+          : t("transferForm.submitFailed"),
       );
     } finally {
       setSubmitting(false);
@@ -47,7 +49,7 @@ export function TransferForm({
   return (
     <form className="transfer-form" onSubmit={(event) => void submit(event)}>
       <label>
-        Amount sent ({asset.symbol})
+        {t("transferForm.amount", { symbol: asset.symbol })}
         <input
           type="number"
           min="0"
@@ -58,10 +60,10 @@ export function TransferForm({
           onChange={(event) => setAmount(event.target.value)}
           placeholder="0.00"
         />
-        <small>Enter exactly the amount you sent.</small>
+        <small>{t("transferForm.amountHint")}</small>
       </label>
       <label>
-        Transaction hash
+        {t("transfer.hash")}
         <input
           required
           minLength={isSolana ? 80 : 64}
@@ -70,26 +72,26 @@ export function TransferForm({
           onChange={(event) => setTransactionHash(event.target.value)}
           placeholder={
             isSolana
-              ? "Paste the Solana transaction signature"
-              : "Paste the 64-character transaction hash"
+              ? t("transferForm.hashPlaceholderSol")
+              : t("transferForm.hashPlaceholder")
           }
           autoComplete="off"
           spellCheck={false}
         />
-        <small>
-          Your wallet shows this after sending (also called transaction ID or
-          TxID). We use it to find your transfer on the blockchain.
-        </small>
+        <small>{t("transferForm.hashHint")}</small>
       </label>
       <label>
         <span>
-          Your wallet address <span className="optional-label">Optional</span>
+          {t("transferForm.sender")}{" "}
+          <span className="optional-label">{t("common.optional")}</span>
         </span>
         <input
           value={senderAddress}
           onChange={(event) => setSenderAddress(event.target.value)}
           maxLength={150}
-          placeholder={`The ${asset.symbol} address you sent from`}
+          placeholder={t("transferForm.senderPlaceholder", {
+            symbol: asset.symbol,
+          })}
           autoComplete="off"
           spellCheck={false}
         />
@@ -109,12 +111,10 @@ export function TransferForm({
         ) : (
           <Send size={15} />
         )}
-        {submitting ? "Submitting…" : "I have sent funds"}
+        {submitting ? t("common.submitting") : t("transferForm.submit")}
       </button>
       <p className="transfer-form-footnote">
-        An admin checks your transaction on the blockchain. Once confirmed, the
-        amount is added to your {asset.symbol} investment and you'll see it here
-        and in your portfolio.
+        {t("transferForm.footnote", { symbol: asset.symbol })}
       </p>
     </form>
   );

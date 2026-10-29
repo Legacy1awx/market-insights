@@ -1,19 +1,18 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowLeft, LoaderCircle, RefreshCw, Wallet } from "lucide-react";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { WithdrawalForm } from "@/components/withdrawals/WithdrawalForm";
 import { WithdrawalList } from "@/components/withdrawals/WithdrawalList";
 import { useMyWithdrawals } from "@/hooks/use-my-withdrawals";
 import { useAuth } from "@/lib/auth";
 import type { Withdrawal } from "@/lib/withdrawals";
-
-const usd = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-});
+import { formatUsd } from "@/i18n/format";
 
 export default function Withdraw() {
+  const { t } = useTranslation();
   const { user, isLoading: authLoading } = useAuth();
   const { withdrawals, balances, loading, error, reload } = useMyWithdrawals();
   const [justRequested, setJustRequested] = useState<string | null>(null);
@@ -26,8 +25,11 @@ export default function Withdraw() {
 
   const handleRequested = (withdrawal: Withdrawal) => {
     setJustRequested(withdrawal.id);
-    toast.success("Withdrawal requested", {
-      description: `${usd.format(Number(withdrawal.amountUsd))} from ${withdrawal.symbol} · Pending`,
+    toast.success(t("withdraw.toastTitle"), {
+      description: t("withdraw.toastText", {
+        amount: formatUsd(Number(withdrawal.amountUsd)),
+        symbol: withdrawal.symbol,
+      }),
     });
     void reload().catch(() => undefined);
   };
@@ -36,9 +38,9 @@ export default function Withdraw() {
     setRefreshing(true);
     try {
       await reload();
-      toast.success("Withdrawals updated");
+      toast.success(t("withdraw.updated"));
     } catch (refreshError) {
-      toast.error("Couldn't refresh your withdrawals", {
+      toast.error(t("withdraw.refreshFailed"), {
         description:
           refreshError instanceof Error ? refreshError.message : undefined,
       });
@@ -54,39 +56,39 @@ export default function Withdraw() {
           <span className="funds-brand-mark">N</span>
           northstar<span>.</span>
         </Link>
-        <Link className="funds-back" to="/portfolio">
-          <ArrowLeft size={15} /> Back to portfolio
-        </Link>
+        <div className="funds-topbar-actions">
+          <LanguageSwitcher />
+          <Link className="funds-back" to="/portfolio">
+            <ArrowLeft size={15} /> {t("funds.backToPortfolio")}
+          </Link>
+        </div>
       </header>
 
       <section className="funds-content">
         <div className="funds-heading">
-          <span className="eyebrow">WITHDRAW FUNDS</span>
-          <h1>Withdraw</h1>
-          <p>
-            Request a withdrawal from one of your investments. An admin
-            processes it and sends the funds to your wallet.
-          </p>
+          <span className="eyebrow">{t("withdraw.eyebrow")}</span>
+          <h1>{t("withdraw.title")}</h1>
+          <p>{t("withdraw.intro")}</p>
         </div>
 
         {authLoading ? (
           <p className="invest-step-placeholder" role="status">
-            <LoaderCircle className="admin-spinner" size={15} /> Checking your
-            account…
+            <LoaderCircle className="admin-spinner" size={15} />{" "}
+            {t("funds.checkingAccount")}
           </p>
         ) : !user ? (
           <div className="invest-signin panel">
             <Wallet size={18} />
             <div>
-              <b>Sign in to withdraw</b>
-              <span>You need an account with investments to withdraw.</span>
+              <b>{t("withdraw.signInTitle")}</b>
+              <span>{t("withdraw.signInText")}</span>
             </div>
             <Link
               className="button button-primary"
               to="/account"
               state={{ returnTo: "/withdraw" }}
             >
-              Sign in
+              {t("common.signIn")}
             </Link>
           </div>
         ) : (
@@ -94,11 +96,13 @@ export default function Withdraw() {
             <section className="panel invest-step active withdraw-panel">
               <div className="invest-step-heading">
                 <div>
-                  <h2>New withdrawal</h2>
+                  <h2>{t("withdraw.newTitle")}</h2>
                   <p>
                     {loading
-                      ? "Loading your balances…"
-                      : `${usd.format(totalAvailable)} available across your investments.`}
+                      ? t("withdraw.loadingBalances")
+                      : t("withdraw.available", {
+                          amount: formatUsd(totalAvailable),
+                        })}
                   </p>
                 </div>
               </div>
@@ -109,7 +113,8 @@ export default function Withdraw() {
               )}
               {loading ? (
                 <p className="invest-step-placeholder" role="status">
-                  <LoaderCircle className="admin-spinner" size={15} /> Loading…
+                  <LoaderCircle className="admin-spinner" size={15} />{" "}
+                  {t("common.loading")}
                 </p>
               ) : (
                 <WithdrawalForm
@@ -122,8 +127,8 @@ export default function Withdraw() {
             <section className="funds-history" id="withdrawals">
               <div className="funds-history-heading">
                 <div>
-                  <span className="eyebrow">YOUR ACCOUNT</span>
-                  <h2>Your withdrawals</h2>
+                  <span className="eyebrow">{t("funds.yourAccount")}</span>
+                  <h2>{t("withdraw.listTitle")}</h2>
                 </div>
                 <button
                   className="button button-subtle button-small"
@@ -135,13 +140,12 @@ export default function Withdraw() {
                   ) : (
                     <RefreshCw size={13} />
                   )}
-                  Refresh
+                  {t("common.refresh")}
                 </button>
               </div>
               {!loading && withdrawals.length === 0 ? (
                 <div className="panel funds-empty">
-                  No withdrawals yet. Requests you make appear here with their
-                  status.
+                  {t("withdraw.empty")}
                 </div>
               ) : (
                 <WithdrawalList
@@ -154,8 +158,7 @@ export default function Withdraw() {
         )}
 
         <p className="funds-disclaimer">
-          Northstar never asks for your wallet keys or recovery phrase. Check
-          your wallet address carefully; crypto transfers can't be reversed.
+          {t("withdraw.disclaimer")}
         </p>
       </section>
     </main>

@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { Check, Clock, X } from "lucide-react";
 import { formatDateTime } from "@/lib/api";
 import type { Withdrawal, WithdrawalStatus } from "@/lib/withdrawals";
@@ -13,24 +14,25 @@ export function WithdrawalTimeline({
   withdrawal: Pick<Withdrawal, "status" | "history" | "createdAt" | "symbol">;
   audience?: "user" | "admin";
 }) {
+  const { t } = useTranslation();
   const { status, history, symbol } = withdrawal;
   const reachedAt = (target: WithdrawalStatus) =>
     [...history].reverse().find((event) => event.status === target)?.at ?? null;
-  const owner = audience === "admin" ? "their" : "your";
+  const context = audience === "admin" ? "admin" : undefined;
 
   const steps: { title: string; detail: string; state: StepState }[] = [
     {
-      title: "Withdrawal requested",
+      title: t("timeline.withdrawal.requested"),
       detail: formatDateTime(withdrawal.createdAt),
       state: "done",
     },
     {
-      title: "Processing",
+      title: t("status.withdrawal.processing"),
       detail:
         status === "pending"
-          ? "Waiting for an admin to start processing."
+          ? t("timeline.withdrawal.waiting")
           : status === "rejected" && !reachedAt("processing")
-            ? "Not processed."
+            ? t("timeline.withdrawal.notProcessed")
             : formatDateTime(reachedAt("processing")),
       state:
         status === "pending" || status === "processing"
@@ -41,16 +43,16 @@ export function WithdrawalTimeline({
     },
     status === "rejected"
       ? {
-          title: "Rejected",
-          detail: `${formatDateTime(reachedAt("rejected"))} · Nothing was deducted.`,
+          title: t("status.withdrawal.rejected"),
+          detail: `${formatDateTime(reachedAt("rejected"))} · ${t("timeline.withdrawal.nothingDeducted")}`,
           state: "failed",
         }
       : {
-          title: `Sent to ${owner} wallet`,
+          title: t("timeline.withdrawal.sent", { context }),
           detail:
             status === "completed"
-              ? `${formatDateTime(reachedAt("completed"))} · Deducted from ${owner} ${symbol} investment.`
-              : "Happens once processing is finished.",
+              ? `${formatDateTime(reachedAt("completed"))} · ${t("timeline.withdrawal.deducted", { symbol, context })}`
+              : t("timeline.withdrawal.sentLater"),
           state: status === "completed" ? "done" : "upcoming",
         },
   ];

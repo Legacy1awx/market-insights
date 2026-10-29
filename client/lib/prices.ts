@@ -1,3 +1,5 @@
+import { BINANCE_REST } from "@/lib/market";
+
 export type TokenQuote = { price: number; change24h: number | null };
 export type TokenQuotes = Record<string, TokenQuote>;
 
@@ -13,7 +15,7 @@ async function fromBinance(signal?: AbortSignal): Promise<TokenQuotes> {
     JSON.stringify(TRACKED.map((symbol) => `${symbol}USDT`)),
   );
   const response = await fetch(
-    `https://api.binance.com/api/v3/ticker/24hr?symbols=${symbols}`,
+    `${BINANCE_REST}/ticker/24hr?symbols=${symbols}`,
     { signal },
   );
   if (!response.ok) throw new Error("Binance prices unavailable");

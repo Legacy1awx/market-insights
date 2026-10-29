@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { ArrowUpFromLine, CircleAlert, LoaderCircle } from "lucide-react";
 import { findDepositAsset } from "@shared/deposit-assets";
 import {
@@ -14,11 +15,7 @@ import {
   type WithdrawalBalance,
 } from "@/lib/withdrawals";
 import { cn } from "@/lib/utils";
-
-const usd = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-});
+import { formatUsd } from "@/i18n/format";
 
 /** Choose an investment, enter an amount and a wallet, then request it. */
 export function WithdrawalForm({
@@ -28,6 +25,7 @@ export function WithdrawalForm({
   balances: WithdrawalBalance[];
   onRequested: (withdrawal: Withdrawal) => void;
 }) {
+  const { t } = useTranslation();
   const withdrawable = balances.filter(
     (balance) => Number(balance.availableUsd) > 0,
   );
@@ -56,19 +54,20 @@ export function WithdrawalForm({
     setError("");
     const trimmed = amount.trim();
     if (!USD_AMOUNT_PATTERN.test(trimmed) || Number(trimmed) <= 0) {
-      setError(
-        "Enter a USD amount greater than zero, with up to two decimals.",
-      );
+      setError(t("withdrawForm.errors.amount"));
       return;
     }
     if (Number(trimmed) > available) {
       setError(
-        `You can withdraw up to ${usd.format(available)} from ${symbol}.`,
+        t("withdrawForm.errors.tooHigh", {
+          amount: formatUsd(available),
+          symbol,
+        }),
       );
       return;
     }
     if (!isValidWithdrawalAddress(symbol, address)) {
-      setError(`Enter a valid ${symbol} wallet address.`);
+      setError(t("withdrawForm.errors.address", { symbol }));
       return;
     }
     setSubmitting(true);
@@ -85,7 +84,7 @@ export function WithdrawalForm({
       setError(
         submitError instanceof Error
           ? submitError.message
-          : "Your withdrawal couldn't be requested.",
+          : t("withdrawForm.errors.failed"),
       );
     } finally {
       setSubmitting(false);
@@ -95,9 +94,7 @@ export function WithdrawalForm({
   if (withdrawable.length === 0) {
     return (
       <p className="invest-step-placeholder">
-        You don't have any funds available to withdraw yet. Confirmed
-        investments appear here; amounts already in a pending withdrawal are
-        reserved.
+        {t("withdrawForm.nothingAvailable")}
       </p>
     );
   }
@@ -105,7 +102,7 @@ export function WithdrawalForm({
   return (
     <form className="transfer-form" onSubmit={(event) => void submit(event)}>
       <fieldset className="withdraw-sources">
-        <legend>Withdraw from</legend>
+        <legend>{t("withdrawForm.source")}</legend>
         {balances.map((balance) => {
           const disabled = Number(balance.availableUsd) <= 0;
           return (
@@ -134,9 +131,13 @@ export function WithdrawalForm({
                   {findDepositAsset(balance.symbol)?.name ?? balance.symbol}
                 </b>
                 <small>
-                  {usd.format(Number(balance.availableUsd))} available
+                  {t("withdrawForm.available", {
+                    amount: formatUsd(Number(balance.availableUsd)),
+                  })}
                   {Number(balance.reservedUsd) > 0 &&
-                    ` · ${usd.format(Number(balance.reservedUsd))} pending`}
+                    ` · ${t("withdrawForm.pending", {
+                      amount: formatUsd(Number(balance.reservedUsd)),
+                    })}`}
                 </small>
               </span>
             </label>
@@ -145,7 +146,7 @@ export function WithdrawalForm({
       </fieldset>
 
       <label>
-        Amount (USD)
+        {t("withdrawForm.amount")}
         <span className="withdraw-amount-row">
           <input
             type="number"
@@ -163,18 +164,21 @@ export function WithdrawalForm({
             className="button button-subtle"
             onClick={() => setAmount(available.toFixed(2))}
           >
-            Max
+            {t("withdrawForm.max")}
           </button>
         </span>
         <small className={amountTooHigh ? "negative-text" : undefined}>
           {amountTooHigh
-            ? `That's more than the ${usd.format(available)} available.`
-            : `Up to ${usd.format(available)} available from ${symbol}.`}
+            ? t("withdrawForm.amountTooHigh", { amount: formatUsd(available) })
+            : t("withdrawForm.amountHint", {
+                amount: formatUsd(available),
+                symbol,
+              })}
         </small>
       </label>
 
       <label>
-        Your {symbol} wallet address
+        {t("withdrawForm.address", { symbol })}
         <input
           required
           value={address}
@@ -186,8 +190,13 @@ export function WithdrawalForm({
         />
         <small className={addressInvalid ? "negative-text" : undefined}>
           {addressInvalid
-            ? `That doesn't look like a valid ${symbol} address.`
-            : `Funds are sent as ${symbol}${asset ? ` on the ${asset.network} network` : ""}. Double-check it — transfers can't be reversed.`}
+            ? t("withdrawForm.addressInvalid", { symbol })
+            : asset
+              ? t("withdrawForm.addressHintNetwork", {
+                  symbol,
+                  network: asset.network,
+                })
+              : t("withdrawForm.addressHint", { symbol })}
         </small>
       </label>
 
@@ -206,12 +215,10 @@ export function WithdrawalForm({
         ) : (
           <ArrowUpFromLine size={15} />
         )}
-        {submitting ? "Submitting…" : "Request withdrawal"}
+        {submitting ? t("common.submitting") : t("withdrawForm.submit")}
       </button>
       <p className="transfer-form-footnote">
-        Your request starts as <b>Pending</b>. An admin moves it to{" "}
-        <b>Processing</b> and then completes it. The amount is deducted from
-        your investment only when the withdrawal is completed.
+        <Trans i18nKey="withdrawForm.footnote" components={{ b: <b /> }} />
       </p>
     </form>
   );

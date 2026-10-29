@@ -7,7 +7,28 @@ import {
   useRef,
   useState,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { Sparkline } from "@/components/market/Sparkline";
+import { useAssetMarkets, useFearGreed, useGlobalMarket } from "@/hooks/use-market";
+import {
+  dateFormat,
+  formatCandleTime,
+  formatCompactUsd,
+  formatPrice,
+  formatUsd,
+  numberFormat,
+} from "@/i18n/format";
+import { holdingsHistory, readHoldings } from "@/lib/holdings";
+import {
+  BINANCE_STREAM,
+  TIMEFRAMES,
+  fetchCandles,
+  fetchTickers,
+  type Candle,
+  type Timeframe,
+} from "@/lib/market";
 import { useAuth } from "@/lib/auth";
 import {
   Activity,
@@ -55,13 +76,12 @@ type Asset = {
   volume24h: number;
   color: string;
   short: string;
-};
-type Candle = {
-  time: string;
-  open: number;
-  close: number;
-  high: number;
-  low: number;
+  rank?: number | null;
+  circulatingSupply?: number | null;
+  maxSupply?: number | null;
+  high24h?: number;
+  low24h?: number;
+  sparkline?: number[];
 };
 type FeedState =
   "live" | "delayed" | "simulated" | "connecting" | "reconnecting" | "offline";
@@ -201,7 +221,20 @@ const ASSETS: Asset[] = [
     short: "L",
   },
 ];
-const TIMEFRAMES = ["1D", "1W", "1M", "3M", "1Y", "5Y", "ALL"];
+const SCREEN_KEYS = {
+  Overview: "nav.overview",
+  Markets: "nav.markets",
+  Portfolio: "nav.portfolio",
+  Alerts: "nav.alerts",
+  Screener: "nav.screener",
+  "Send funds": "nav.sendFunds",
+  Withdraw: "nav.withdraw",
+} as const;
+const CHART_TYPE_KEYS = {
+  Area: "chart.area",
+  Line: "chart.line",
+  Candles: "chart.candles",
+} as const;
 const SCREEN_PATHS: Record<Screen, string> = {
   Overview: "/dashboard",
   Markets: "/markets",
@@ -215,18 +248,11 @@ const PATH_SCREENS: Record<string, Screen> = Object.fromEntries(
 const STORAGE = {
   watchlist: "northstar-watchlist",
   theme: "northstar-theme",
-  mock: "northstar-mock-mode",
+  // v2: live data became the default; older saved "simulated" choices reset.
+  mock: "northstar-mock-mode-v2",
   colorSafe: "northstar-color-safe",
   recent: "northstar-recent-searches",
 };
-const numberFormat = new Intl.NumberFormat("en-US", {
-  maximumFractionDigits: 2,
-});
-const currencyFormat = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 2,
-});
 
 function readStorage<T>(key: string, fallback: T): T {
   try {
@@ -237,15 +263,10 @@ function readStorage<T>(key: string, fallback: T): T {
   }
 }
 
-function formatPrice(value: number) {
-  return value < 1
-    ? new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-        minimumFractionDigits: 4,
-        maximumFractionDigits: 4,
-      }).format(value)
-    : currencyFormat.format(value);
+/** "+1.23%" / "−1.23%", or "—" while the value is unknown. */
+function formatChange(value: number) {
+  if (!Number.isFinite(value)) return "—";
+  return `${value >= 0 ? "+" : "−"}${Math.abs(value).toFixed(2)}%`;
 }
 
 function makeSeries(price: number, seed: number, timeframe = "1D"): Candle[] {
@@ -271,38 +292,14 @@ function makeSeries(price: number, seed: number, timeframe = "1D"): Candle[] {
       price * (0.002 + Math.abs(Math.sin(index * 0.73 + seed)) * 0.0025);
     previous = close;
     return {
-      time: new Date(
-        Date.now() - (71 - index) * interval * 60_000,
-      ).toLocaleString("en-US", {
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      }),
+      time: Date.now() - (71 - index) * interval * 60_000,
       open,
       close,
+      volume: 0,
       high: Math.max(open, close) + spread,
       low: Math.min(open, close) - spread,
     };
   });
-}
-
-function TinyTrend({ positive, color }: { positive: boolean; color?: string }) {
-  const points = positive
-    ? "0,21 12,19 23,22 34,14 45,16 57,9 68,11 80,3"
-    : "0,4 12,10 23,8 34,16 45,13 57,21 68,18 80,24";
-  return (
-    <svg className="tiny-trend" viewBox="0 0 80 28" aria-hidden="true">
-      <polyline
-        points={points}
-        fill="none"
-        stroke={color || (positive ? "var(--positive)" : "var(--negative)")}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
 }
 
 function PriceChart({
@@ -316,68 +313,90 @@ function PriceChart({
   loading,
   error,
   onRetry,
+  assets,
 }: {
   data: Candle[];
   type: ChartType;
   onTypeChange: (value: ChartType) => void;
-  timeframe: string;
-  onTimeframeChange: (value: string) => void;
+  timeframe: Timeframe;
+  onTimeframeChange: (value: Timeframe) => void;
   symbol: string;
   source: string;
   loading: boolean;
   error: boolean;
   onRetry: () => void;
+  assets: Asset[];
 }) {
+  const { t } = useTranslation();
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [movingAverage, setMovingAverage] = useState(false);
   const [volume, setVolume] = useState(false);
   const [rsi, setRsi] = useState(false);
   const [comparison, setComparison] = useState("");
-  const svgRef = useRef<SVGSVGElement>(null);
+  const [comparisonData, setComparisonData] = useState<Candle[]>([]);
+  const plotRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setComparisonData([]);
+    if (!comparison) return;
+    let active = true;
+    fetchCandles(comparison, timeframe)
+      .then((candles) => active && setComparisonData(candles))
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [comparison, timeframe]);
+
   const plot = useMemo(() => {
+    if (!data.length) return null;
     const values = data.flatMap((row) => [row.high, row.low]);
     const min = Math.min(...values);
     const max = Math.max(...values);
-    const pad = (max - min) * 0.14 || max * 0.01;
+    const pad = (max - min) * 0.12 || max * 0.01;
     const top = max + pad;
     const bottom = min - pad;
-    const x = (index: number) =>
-      16 + (index / Math.max(data.length - 1, 1)) * 868;
-    const y = (value: number) => 22 + ((top - value) / (top - bottom)) * 266;
-    return { x, y, min: bottom, max: top };
+    const x = (index: number) => (index / Math.max(data.length - 1, 1)) * 1000;
+    const y = (value: number) => ((top - value) / (top - bottom)) * 300;
+    return { x, y, min, max, top, bottom };
   }, [data]);
-  const points = data
-    .map((point, index) => `${plot.x(index)},${plot.y(point.close)}`)
-    .join(" ");
-  const areaPoints = `16,300 ${points} 884,300`;
+
   const activeIndex = hoverIndex ?? data.length - 1;
   const active = data[activeIndex];
-  const chartChange =
-    data.length > 1
-      ? (data[data.length - 1].close / data[0].open - 1) * 100
-      : 0;
-  const movingAveragePoints = data
-    .map((_, index) => {
-      const slice = data.slice(Math.max(0, index - 19), index + 1);
-      return `${plot.x(index)},${plot.y(slice.reduce((sum, item) => sum + item.close, 0) / slice.length)}`;
-    })
-    .join(" ");
-  const comparisonAsset = ASSETS.find((asset) => asset.symbol === comparison);
+  const first = data[0]?.open ?? 0;
+  const last = data[data.length - 1]?.close ?? 0;
+  const chartChange = first ? (last / first - 1) * 100 : 0;
+  const span = data.length > 1 ? data[data.length - 1].time - data[0].time : 0;
+  const points = plot
+    ? data.map((row, index) => `${plot.x(index)},${plot.y(row.close)}`).join(" ")
+    : "";
+  const movingAveragePoints = plot
+    ? data
+        .map((_, index) => {
+          const slice = data.slice(Math.max(0, index - 19), index + 1);
+          const average =
+            slice.reduce((sum, item) => sum + item.close, 0) / slice.length;
+          return `${plot.x(index)},${plot.y(average)}`;
+        })
+        .join(" ")
+    : "";
+  // Rebase the comparison asset onto this chart: same start, relative moves.
   const comparisonPoints =
-    comparison && data.length
-      ? data
-          .map((_, index) => {
-            const relative = index / Math.max(data.length - 1, 1);
-            const normalized =
-              data[0].close *
-              (1 +
-                (relative * (comparisonAsset?.change ?? 0)) / 100 +
-                Math.sin(index * 0.24 + comparison.length) * 0.006);
-            return `${plot.x(index)},${plot.y(normalized)}`;
-          })
-          .join(" ")
+    plot && comparisonData.length > 1 && data.length > 1
+      ? (() => {
+          const aligned = comparisonData.slice(-data.length);
+          const offset = data.length - aligned.length;
+          const base = aligned[0].close;
+          return aligned
+            .map(
+              (row, index) =>
+                `${plot.x(index + offset)},${plot.y((row.close / base) * data[offset].close)}`,
+            )
+            .join(" ");
+        })()
       : "";
+  const maxVolume = Math.max(0, ...data.map((row) => row.volume));
   const rsiValueAt = (index: number) => {
     const start = Math.max(1, index - 13);
     let gains = 0;
@@ -389,53 +408,51 @@ function PriceChart({
     }
     return losses === 0 ? 100 : 100 - 100 / (1 + gains / losses);
   };
-  const rsiValue = data.length ? Math.round(rsiValueAt(data.length - 1)) : 0;
-  const rsiPoints = data
-    .map(
-      (_, index) =>
-        `${plot.x(index)},${8 + ((100 - rsiValueAt(index)) / 100) * 46}`,
-    )
-    .join(" ");
+  const rsiValue = data.length > 1 ? Math.round(rsiValueAt(data.length - 1)) : 0;
+  const rsiPoints =
+    data.length > 1
+      ? data
+          .map(
+            (_, index) =>
+              `${(index / (data.length - 1)) * 1000},${4 + ((100 - rsiValueAt(index)) / 100) * 52}`,
+          )
+          .join(" ")
+      : "";
+  const pct = (value: number, total: number) => `${(value / total) * 100}%`;
 
-  const moveCrosshair = (event: React.PointerEvent<SVGSVGElement>) => {
-    if (!svgRef.current || !data.length) return;
-    const bounds = svgRef.current.getBoundingClientRect();
-    const relative = Math.min(
-      Math.max((event.clientX - bounds.left) / bounds.width, 0),
-      1,
-    );
-    setHoverIndex(Math.round(relative * (data.length - 1)));
+  const moveCrosshair = (clientX: number) => {
+    const bounds = plotRef.current?.getBoundingClientRect();
+    if (!bounds || !data.length) return;
+    const ratio = Math.min(Math.max((clientX - bounds.left) / bounds.width, 0), 1);
+    setHoverIndex(Math.round(ratio * (data.length - 1)));
   };
 
   return (
-    <section className="panel chart-panel" aria-label={`${symbol} price chart`}>
+    <section className="panel chart-panel" aria-label={t("chart.label", { symbol })}>
       <div className="chart-panel-top">
         <div className="chart-heading">
-          <span className="eyebrow">PRICE PERFORMANCE</span>
+          <span className="eyebrow">{t("chart.eyebrow")}</span>
           <span className="chart-current">
             {symbol} <span>·</span> USD
           </span>
         </div>
         <div className="chart-tools">
-          <div
-            className="chart-type-control"
-            role="group"
-            aria-label="Chart style"
-          >
+          <div className="chart-type-control" role="group" aria-label={t("chart.style")}>
             {(["Area", "Line", "Candles"] as ChartType[]).map((item) => (
               <button
                 className={type === item ? "chart-type active" : "chart-type"}
                 key={item}
+                aria-pressed={type === item}
                 onClick={() => onTypeChange(item)}
               >
-                {item}
+                {t(CHART_TYPE_KEYS[item])}
               </button>
             ))}
           </div>
           <div className="chart-options-wrap">
             <button
               className="icon-button chart-options"
-              aria-label="Chart options"
+              aria-label={t("chart.options")}
               aria-expanded={toolsOpen}
               onClick={() => setToolsOpen(!toolsOpen)}
             >
@@ -443,22 +460,18 @@ function PriceChart({
             </button>
             {toolsOpen && (
               <div className="chart-options-menu">
-                <span className="menu-label">INDICATORS</span>
+                <span className="menu-label">{t("chart.indicators")}</span>
                 <button onClick={() => setMovingAverage(!movingAverage)}>
                   <span>
-                    Moving average <small>20 period</small>
+                    {t("chart.movingAverage")} <small>{t("chart.movingAverageHint")}</small>
                   </span>
-                  <i
-                    className={
-                      movingAverage ? "menu-check checked" : "menu-check"
-                    }
-                  >
+                  <i className={movingAverage ? "menu-check checked" : "menu-check"}>
                     {movingAverage && <Check size={11} />}
                   </i>
                 </button>
                 <button onClick={() => setVolume(!volume)}>
                   <span>
-                    Volume <small>Trading activity</small>
+                    {t("chart.volume")} <small>{t("chart.volumeHint")}</small>
                   </span>
                   <i className={volume ? "menu-check checked" : "menu-check"}>
                     {volume && <Check size={11} />}
@@ -466,26 +479,26 @@ function PriceChart({
                 </button>
                 <button onClick={() => setRsi(!rsi)}>
                   <span>
-                    RSI <small>Momentum · 14</small>
+                    RSI <small>{t("chart.rsiHint")}</small>
                   </span>
                   <i className={rsi ? "menu-check checked" : "menu-check"}>
                     {rsi && <Check size={11} />}
                   </i>
                 </button>
-                <span className="menu-label compare-label">COMPARE ASSET</span>
+                <span className="menu-label compare-label">{t("chart.compare")}</span>
                 <select
-                  aria-label="Compare with another asset"
+                  aria-label={t("chart.compareLabel")}
                   value={comparison}
                   onChange={(event) => setComparison(event.target.value)}
                 >
-                  <option value="">Off</option>
-                  {ASSETS.filter((asset) => asset.symbol !== symbol).map(
-                    (asset) => (
+                  <option value="">{t("common.off")}</option>
+                  {assets
+                    .filter((asset) => asset.symbol !== symbol)
+                    .map((asset) => (
                       <option key={asset.symbol} value={asset.symbol}>
                         {asset.name} ({asset.symbol})
                       </option>
-                    ),
-                  )}
+                    ))}
                 </select>
               </div>
             )}
@@ -493,108 +506,108 @@ function PriceChart({
         </div>
       </div>
       <div className="chart-value-row" aria-live="polite">
-        <strong>{formatPrice(data[data.length - 1]?.close ?? 0)}</strong>
-        <span
-          className={`change-pill ${chartChange >= 0 ? "positive" : "negative"}`}
-        >
-          {chartChange >= 0 ? (
-            <ArrowUpRight size={14} />
-          ) : (
-            <ArrowDownRight size={14} />
-          )}{" "}
+        <strong>{formatPrice(last)}</strong>
+        <span className={`change-pill ${chartChange >= 0 ? "positive" : "negative"}`}>
+          {chartChange >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}{" "}
           {chartChange >= 0 ? "+" : "−"}
           {Math.abs(chartChange).toFixed(2)}%
         </span>
-        <span className="chart-value-note">{timeframe} performance</span>
+        <span className="chart-value-note">{t("chart.performance", { timeframe })}</span>
       </div>
-      <div className="chart-plot-wrap">
-        {loading ? (
-          <div className="chart-skeleton" aria-label="Loading chart" />
-        ) : error ? (
-          <div className="chart-error">
-            <b>Chart data is unavailable</b>
-            <span>Check your connection and try again.</span>
-            <button className="button button-subtle" onClick={onRetry}>
-              Retry <ArrowRight size={13} />
-            </button>
-          </div>
-        ) : data.length ? (
-          <>
-            <svg
-              ref={svgRef}
-              className="price-chart"
-              viewBox="0 0 900 330"
-              preserveAspectRatio="none"
-              onPointerMove={moveCrosshair}
-              onPointerLeave={() => setHoverIndex(null)}
-              role="img"
-              aria-label={`${symbol} is up today; price range ${formatPrice(plot.min)} to ${formatPrice(plot.max)}. Use pointer to inspect chart values.`}
-              tabIndex={0}
-              onKeyDown={(event) => {
-                if (event.key === "ArrowLeft")
-                  setHoverIndex((current) =>
-                    Math.max(0, (current ?? data.length - 1) - 1),
-                  );
-                if (event.key === "ArrowRight")
-                  setHoverIndex((current) =>
-                    Math.min(data.length - 1, (current ?? data.length - 1) + 1),
-                  );
-              }}
-            >
+      {loading && !data.length ? (
+        <div className="market-chart price-chart-frame">
+          <div className="market-chart-plot chart-skeleton" aria-label={t("chart.loading")} />
+        </div>
+      ) : error && !data.length ? (
+        <div className="market-chart market-chart-message price-chart-frame" role="alert">
+          <Activity size={18} />
+          <b>{t("chart.errorTitle")}</b>
+          <span>{t("chart.errorText")}</span>
+          <button className="button button-subtle button-small" onClick={onRetry}>
+            {t("common.retry")} <ArrowRight size={13} />
+          </button>
+        </div>
+      ) : plot ? (
+        <div className="market-chart has-axis price-chart-frame">
+          <div
+            ref={plotRef}
+            className="market-chart-plot"
+            role="img"
+            tabIndex={0}
+            aria-label={t("chart.description", {
+              symbol,
+              min: formatPrice(plot.min),
+              max: formatPrice(plot.max),
+            })}
+            onPointerMove={(event) => moveCrosshair(event.clientX)}
+            onPointerDown={(event) => moveCrosshair(event.clientX)}
+            onPointerLeave={() => setHoverIndex(null)}
+            onBlur={() => setHoverIndex(null)}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              const step = event.key === "ArrowLeft" ? -1 : 1;
+              setHoverIndex((current) =>
+                Math.min(data.length - 1, Math.max(0, (current ?? data.length - 1) + step)),
+              );
+            }}
+          >
+            <svg viewBox="0 0 1000 300" preserveAspectRatio="none" aria-hidden="true">
               <defs>
                 <linearGradient id="chart-fill" x1="0" x2="0" y1="0" y2="1">
-                  <stop
-                    offset="0%"
-                    stopColor="var(--chart-line)"
-                    stopOpacity=".22"
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor="var(--chart-line)"
-                    stopOpacity="0"
-                  />
+                  <stop offset="0%" stopColor="var(--chart-line)" stopOpacity=".22" />
+                  <stop offset="100%" stopColor="var(--chart-line)" stopOpacity="0" />
                 </linearGradient>
               </defs>
-              {[0, 1, 2, 3].map((line) => (
-                <g key={line}>
-                  <line
-                    x1="16"
-                    x2="884"
-                    y1={35 + line * 78}
-                    y2={35 + line * 78}
-                    className="chart-gridline"
-                  />
-                  <text x="888" y={39 + line * 78} className="chart-axis-label">
-                    {formatPrice(plot.max - ((plot.max - plot.min) * line) / 3)}
-                  </text>
-                </g>
+              {[0.25, 0.5, 0.75].map((ratio) => (
+                <line
+                  key={ratio}
+                  x1="0"
+                  x2="1000"
+                  y1={ratio * 300}
+                  y2={ratio * 300}
+                  className="chart-gridline"
+                  vectorEffect="non-scaling-stroke"
+                />
               ))}
+              {volume &&
+                maxVolume > 0 &&
+                data.map((row, index) => {
+                  const height = (row.volume / maxVolume) * 60;
+                  return (
+                    <rect
+                      key={`volume-${row.time}`}
+                      x={plot.x(index) - 500 / data.length}
+                      y={300 - height}
+                      width={Math.max(1, (1000 / data.length) * 0.7)}
+                      height={height}
+                      fill={row.close >= row.open ? "var(--positive)" : "var(--negative)"}
+                      opacity=".35"
+                    />
+                  );
+                })}
               {type === "Candles" ? (
                 data.map((row, index) => {
                   const x = plot.x(index);
-                  const candleWidth = Math.max(2.2, 560 / data.length);
-                  const rising = row.close >= row.open;
-                  const color = rising ? "var(--positive)" : "var(--negative)";
+                  const width = Math.max(1.2, (1000 / data.length) * 0.62);
+                  const color = row.close >= row.open ? "var(--positive)" : "var(--negative)";
                   return (
-                    <g key={`${row.time}-${index}`}>
+                    <g key={row.time}>
                       <line
                         x1={x}
                         x2={x}
                         y1={plot.y(row.high)}
                         y2={plot.y(row.low)}
                         stroke={color}
-                        strokeWidth="1.4"
+                        strokeWidth="1"
+                        vectorEffect="non-scaling-stroke"
                       />
                       <rect
-                        x={x - candleWidth / 2}
+                        x={x - width / 2}
                         y={Math.min(plot.y(row.open), plot.y(row.close))}
-                        width={candleWidth}
-                        height={Math.max(
-                          1.5,
-                          Math.abs(plot.y(row.open) - plot.y(row.close)),
-                        )}
+                        width={width}
+                        height={Math.max(1, Math.abs(plot.y(row.open) - plot.y(row.close)))}
                         fill={color}
-                        rx="1"
                       />
                     </g>
                   );
@@ -602,13 +615,13 @@ function PriceChart({
               ) : (
                 <>
                   {type === "Area" && (
-                    <polygon points={areaPoints} fill="url(#chart-fill)" />
+                    <polygon points={`0,300 ${points} 1000,300`} fill="url(#chart-fill)" />
                   )}
                   <polyline
                     points={points}
                     fill="none"
                     stroke="var(--chart-line)"
-                    strokeWidth="2.4"
+                    strokeWidth="2.2"
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     vectorEffect="non-scaling-stroke"
@@ -625,7 +638,7 @@ function PriceChart({
                   vectorEffect="non-scaling-stroke"
                 />
               )}
-              {comparison && (
+              {comparisonPoints && (
                 <polyline
                   points={comparisonPoints}
                   fill="none"
@@ -635,103 +648,73 @@ function PriceChart({
                   vectorEffect="non-scaling-stroke"
                 />
               )}
-              {volume &&
-                data.map((row, index) => (
-                  <rect
-                    key={`volume-${index}`}
-                    x={plot.x(index) - 2}
-                    y={
-                      292 -
-                      Math.min(
-                        18,
-                        (Math.abs(row.close - row.open) / row.close) * 4600,
-                      )
-                    }
-                    width="4"
-                    height={Math.max(
-                      2,
-                      Math.min(
-                        18,
-                        (Math.abs(row.close - row.open) / row.close) * 4600,
-                      ),
-                    )}
-                    fill={
-                      row.close >= row.open
-                        ? "var(--positive)"
-                        : "var(--negative)"
-                    }
-                    opacity=".55"
-                  />
-                ))}
               {hoverIndex !== null && (
-                <>
-                  <line
-                    x1={plot.x(activeIndex)}
-                    x2={plot.x(activeIndex)}
-                    y1="12"
-                    y2="300"
-                    className="chart-crosshair"
-                  />
-                  <circle
-                    cx={plot.x(activeIndex)}
-                    cy={plot.y(active.close)}
-                    r="4.5"
-                    className="chart-marker"
-                  />
-                </>
+                <line
+                  x1={plot.x(activeIndex)}
+                  x2={plot.x(activeIndex)}
+                  y1="0"
+                  y2="300"
+                  className="chart-crosshair"
+                  vectorEffect="non-scaling-stroke"
+                />
               )}
-              <text x="16" y="322" className="chart-axis-label">
-                {timeframe === "1D" ? "12:00 AM" : "Earlier"}
-              </text>
-              <text
-                x="450"
-                y="322"
-                textAnchor="middle"
-                className="chart-axis-label"
-              >
-                {timeframe === "1D" ? "12:00 PM" : "Mid period"}
-              </text>
-              <text
-                x="884"
-                y="322"
-                textAnchor="end"
-                className="chart-axis-label"
-              >
-                Now
-              </text>
             </svg>
-            {hoverIndex !== null && (
-              <div className="chart-tooltip">
-                <span>{active?.time}</span>
-                <b>{formatPrice(active?.close ?? 0)}</b>
-                <small>
-                  O {formatPrice(active?.open ?? 0)} · H{" "}
-                  {formatPrice(active?.high ?? 0)} · L{" "}
-                  {formatPrice(active?.low ?? 0)}
-                </small>
-              </div>
+            {hoverIndex !== null && active && (
+              <>
+                <span
+                  className="market-chart-dot"
+                  style={{
+                    left: pct(plot.x(activeIndex), 1000),
+                    top: pct(plot.y(active.close), 300),
+                    background: "var(--chart-line)",
+                  }}
+                />
+                <div
+                  className={`market-chart-tooltip${activeIndex > data.length / 2 ? " flipped" : ""}`}
+                  style={{ left: pct(plot.x(activeIndex), 1000) }}
+                >
+                  <span>{formatCandleTime(active.time, span, true)}</span>
+                  <b>{formatPrice(active.close)}</b>
+                  <small>
+                    O {formatPrice(active.open)} · H {formatPrice(active.high)} · L{" "}
+                    {formatPrice(active.low)}
+                  </small>
+                </div>
+              </>
             )}
-          </>
-        ) : (
-          <div className="chart-empty">
-            <Activity size={20} />
-            <b>No data for this range</b>
-            <span>Try another timeframe.</span>
           </div>
-        )}
-      </div>
-      {rsi && (
+          <div className="market-chart-y" aria-hidden="true">
+            {[0.25, 0.5, 0.75].map((ratio) => (
+              <span key={ratio} style={{ top: `${ratio * 100}%` }}>
+                {formatPrice(plot.top - ratio * (plot.top - plot.bottom), true)}
+              </span>
+            ))}
+          </div>
+          <div className="market-chart-x" aria-hidden="true">
+            {[0, Math.floor((data.length - 1) / 2), data.length - 1].map((index) => (
+              <span key={index}>
+                {index === data.length - 1
+                  ? t("chart.now")
+                  : formatCandleTime(data[index].time, span)}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="chart-empty">
+          <Activity size={20} />
+          <b>{t("chart.emptyTitle")}</b>
+          <span>{t("chart.emptyText")}</span>
+        </div>
+      )}
+      {rsi && rsiPoints && (
         <div className="rsi-panel">
           <span>
             RSI (14) <b>{rsiValue}</b>
           </span>
-          <svg
-            viewBox="0 0 900 64"
-            preserveAspectRatio="none"
-            aria-label="Relative strength index"
-          >
-            <line x1="16" x2="884" y1="22" y2="22" className="chart-gridline" />
-            <line x1="16" x2="884" y1="40" y2="40" className="chart-gridline" />
+          <svg viewBox="0 0 1000 60" preserveAspectRatio="none" aria-label={t("chart.rsiLabel")}>
+            <line x1="0" x2="1000" y1="19.6" y2="19.6" className="chart-gridline" vectorEffect="non-scaling-stroke" />
+            <line x1="0" x2="1000" y1="40.4" y2="40.4" className="chart-gridline" vectorEffect="non-scaling-stroke" />
             <polyline
               points={rsiPoints}
               fill="none"
@@ -742,7 +725,7 @@ function PriceChart({
           </svg>
         </div>
       )}
-      {(movingAverage || comparison) && (
+      {(movingAverage || comparisonPoints || (volume && maxVolume === 0)) && (
         <div className="chart-legend">
           {movingAverage && (
             <span>
@@ -750,24 +733,22 @@ function PriceChart({
               MA (20)
             </span>
           )}
-          {comparison && (
+          {comparisonPoints && (
             <span>
               <i className="legend-compare" />
-              {comparisonAsset?.symbol} normalized
+              {t("chart.normalized", { symbol: comparison })}
             </span>
           )}
+          {volume && maxVolume === 0 && <span>{t("chart.volumeUnavailable")}</span>}
         </div>
       )}
       <div className="chart-footer">
-        <div
-          className="timeframe-control"
-          role="group"
-          aria-label="Chart timeframe"
-        >
+        <div className="timeframe-control" role="group" aria-label={t("chart.timeframe")}>
           {TIMEFRAMES.map((item) => (
             <button
               key={item}
               className={timeframe === item ? "timeframe active" : "timeframe"}
+              aria-pressed={timeframe === item}
               onClick={() => onTimeframeChange(item)}
             >
               {item}
@@ -783,6 +764,7 @@ function PriceChart({
 }
 
 export default function Index() {
+  const { t } = useTranslation();
   const { user, isLoading: authLoading } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -792,9 +774,8 @@ export default function Index() {
   const [watchlist, setWatchlist] = useState<string[]>(() =>
     readStorage(STORAGE.watchlist, ["BTC", "ETH", "SOL", "LINK"]),
   );
-  const [prices, setPrices] = useState<Record<string, number>>(() =>
-    Object.fromEntries(ASSETS.map((asset) => [asset.symbol, asset.price])),
-  );
+  // Only real quotes go here; simulation mode seeds its own prices.
+  const [prices, setPrices] = useState<Record<string, number>>({});
   const [marketChanges, setMarketChanges] = useState<Record<string, number>>(
     {},
   );
@@ -808,20 +789,21 @@ export default function Index() {
   const [newsLoaded, setNewsLoaded] = useState(false);
   const pricesRef = useRef(prices);
   pricesRef.current = prices;
-  const [chartData, setChartData] = useState<Candle[]>(() =>
-    makeSeries(ASSETS[0].price, 5),
-  );
+  const [chartData, setChartData] = useState<Candle[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState(false);
   const [chartRetry, setChartRetry] = useState(0);
   const [mockMode, setMockMode] = useState(() =>
-    readStorage(STORAGE.mock, true),
+    readStorage(STORAGE.mock, false),
   );
+  const { value: assetMarkets } = useAssetMarkets();
+  const { value: globalMarket } = useGlobalMarket();
+  const { value: fearGreed } = useFearGreed();
   const [theme, setTheme] = useState(() => readStorage(STORAGE.theme, "dark"));
   const [colorSafe, setColorSafe] = useState(() =>
     readStorage(STORAGE.colorSafe, false),
   );
-  const [feedState, setFeedState] = useState<FeedState>("simulated");
+  const [feedState, setFeedState] = useState<FeedState>("connecting");
   const [lastUpdated, setLastUpdated] = useState(() => new Date());
   const [activeScreen, setActiveScreen] = useState<Screen>("Overview");
   const [alertCount, setAlertCount] = useState(
@@ -832,7 +814,7 @@ export default function Index() {
       ]).filter((alert) => alert.enabled).length,
   );
   const [selectedAsset, setSelectedAsset] = useState<string | null>(null);
-  const [timeframe, setTimeframe] = useState("1D");
+  const [timeframe, setTimeframe] = useState<Timeframe>("1D");
   const [chartType, setChartType] = useState<ChartType>("Area");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchText, setSearchText] = useState("");
@@ -954,12 +936,31 @@ export default function Index() {
 
   const marketAssets = useMemo(
     () =>
-      ASSETS.map((asset) => ({
-        ...asset,
-        change: marketChanges[asset.symbol] ?? asset.change,
-        volume24h: marketVolumes[asset.symbol] ?? asset.volume24h,
-      })),
-    [marketChanges, marketVolumes],
+      ASSETS.map((asset) => {
+        const market = assetMarkets?.[asset.symbol];
+        const seed = (value: number) => (mockMode ? value : NaN);
+        return {
+          ...asset,
+          price: market?.price ?? seed(asset.price),
+          change:
+            marketChanges[asset.symbol] ??
+            market?.change24h ??
+            seed(asset.change),
+          marketCap: market?.marketCap ?? seed(asset.marketCap),
+          // CoinGecko's volume covers all exchanges; Binance's only its own.
+          volume24h:
+            market?.volume24h ??
+            marketVolumes[asset.symbol] ??
+            seed(asset.volume24h),
+          rank: market?.rank ?? null,
+          circulatingSupply: market?.circulatingSupply ?? null,
+          maxSupply: market?.maxSupply ?? null,
+          high24h: market?.high24h,
+          low24h: market?.low24h,
+          sparkline: market?.sparkline,
+        };
+      }),
+    [assetMarkets, marketChanges, marketVolumes, mockMode],
   );
   const assetFor = useCallback(
     (symbol: string) =>
@@ -988,68 +989,21 @@ export default function Index() {
       setChartLoading(false);
       return;
     }
-    const controller = new AbortController();
-    const interval =
-      (
-        {
-          "1D": "15m",
-          "1W": "2h",
-          "1M": "12h",
-          "3M": "1d",
-          "1Y": "1w",
-          "5Y": "1M",
-          ALL: "1M",
-        } as Record<string, string>
-      )[timeframe] ?? "15m";
+    let active = true;
     setChartLoading(true);
     setChartError(false);
-    void fetch(
-      `https://api.binance.com/api/v3/klines?symbol=${currentAsset.symbol}USDT&interval=${interval}&limit=72`,
-      { signal: controller.signal },
-    )
-      .then((response) => {
-        if (!response.ok) throw new Error("Chart history unavailable");
-        return response.json() as Promise<
-          Array<
-            [
-              number,
-              string,
-              string,
-              string,
-              string,
-              string,
-              number,
-              ...unknown[],
-            ]
-          >
-        >;
-      })
-      .then((rows) => {
-        if (controller.signal.aborted) return;
-        setChartData(
-          rows.map(([time, open, high, low, close]) => ({
-            time: new Date(time).toLocaleString("en-US", {
-              month: "short",
-              day: "numeric",
-              hour: "numeric",
-              minute: "2-digit",
-            }),
-            open: Number(open),
-            high: Number(high),
-            low: Number(low),
-            close: Number(close),
-          })),
-        );
+    setChartData([]);
+    fetchCandles(currentAsset.symbol, timeframe)
+      .then((candles) => {
+        if (!active) return;
+        setChartData(candles);
         setLastUpdated(new Date());
       })
-      .catch((error: unknown) => {
-        if (error instanceof Error && error.name !== "AbortError")
-          setChartError(true);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setChartLoading(false);
-      });
-    return () => controller.abort();
+      .catch(() => active && setChartError(true))
+      .finally(() => active && setChartLoading(false));
+    return () => {
+      active = false;
+    };
   }, [currentAsset.symbol, timeframe, mockMode, chartRetry]);
 
   const showToast = useCallback((message: string) => {
@@ -1076,20 +1030,14 @@ export default function Index() {
       })
         .then((response) => {
           if (response.status >= 500)
-            showToast(
-              "Email alerts could not be synced. Open email preferences to retry.",
-            );
+            showToast(t("dashboard.alertSyncFailed"));
         })
-        .catch(() =>
-          showToast(
-            "Email alerts could not be synced. Open email preferences to retry.",
-          ),
-        );
+        .catch(() => showToast(t("dashboard.alertSyncFailed")));
     };
     window.addEventListener("northstar:alerts-updated", syncEmailAlerts);
     return () =>
       window.removeEventListener("northstar:alerts-updated", syncEmailAlerts);
-  }, [showToast]);
+  }, [showToast, t]);
 
   useEffect(() => {
     if (mockMode) {
@@ -1147,30 +1095,16 @@ export default function Index() {
 
     let socket: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    const controller = new AbortController();
     receivedFeedSymbols.current.clear();
     let backoff = 1000;
     let closed = false;
-    void Promise.all(
-      ASSETS.map(async (asset) => {
-        const response = await fetch(
-          `https://api.binance.com/api/v3/ticker/24hr?symbol=${asset.symbol}USDT`,
-          { signal: controller.signal },
-        );
-        if (!response.ok) throw new Error("Market snapshot unavailable");
-        const ticker = (await response.json()) as {
-          lastPrice: string;
-          priceChangePercent: string;
-          quoteVolume: string;
-        };
-        return [
-          asset.symbol,
-          Number(ticker.lastPrice),
-          Number(ticker.priceChangePercent),
-          Number(ticker.quoteVolume),
-        ] as const;
-      }),
-    )
+    void fetchTickers(ASSETS.map((asset) => asset.symbol))
+      .then((tickers) =>
+        Object.entries(tickers).map(
+          ([symbol, ticker]) =>
+            [symbol, ticker.price, ticker.change24h, ticker.volume24h] as const,
+        ),
+      )
       .then((snapshot) => {
         if (closed) return;
         const next = { ...pricesRef.current };
@@ -1201,7 +1135,7 @@ export default function Index() {
       if (closed || document.hidden) return;
       setFeedState(backoff > 1000 ? "reconnecting" : "connecting");
       socket = new WebSocket(
-        "wss://stream.binance.com:9443/stream?streams=btcusdt@ticker/ethusdt@ticker/solusdt@ticker/bnbusdt@ticker/xrpusdt@ticker/adausdt@ticker/avaxusdt@ticker/linkusdt@ticker",
+        `${BINANCE_STREAM}?streams=${ASSETS.map((asset) => `${asset.symbol.toLowerCase()}usdt@ticker`).join("/")}`,
       );
       socket.onopen = () => {
         backoff = 1000;
@@ -1293,7 +1227,6 @@ export default function Index() {
     connect();
     return () => {
       closed = true;
-      controller.abort();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (flushTimer.current) clearTimeout(flushTimer.current);
@@ -1355,8 +1288,8 @@ export default function Index() {
     );
     showToast(
       removing
-        ? `${symbol} removed from watchlist`
-        : `${symbol} added to watchlist`,
+        ? t("watchlist.removed", { symbol })
+        : t("watchlist.added", { symbol }),
     );
   };
 
@@ -1384,9 +1317,49 @@ export default function Index() {
         ? b.change - a.change
         : (prices[b.symbol] ?? b.price) - (prices[a.symbol] ?? a.price),
     );
+  // Biggest moves either way, by absolute 24h change.
   const movers = [...marketAssets]
-    .sort((a, b) => b.change - a.change)
+    .filter((asset) => Number.isFinite(asset.change))
+    .sort((a, b) => Math.abs(b.change) - Math.abs(a.change))
     .slice(0, 4);
+  // Tracked assets' combined 7-day trend, weighted by market cap.
+  const totalTrend = (() => {
+    const series = marketAssets.filter(
+      (asset) => asset.sparkline?.length && Number.isFinite(asset.marketCap),
+    );
+    if (!series.length) return undefined;
+    const length = Math.min(...series.map((asset) => asset.sparkline!.length));
+    return Array.from({ length }, (_, index) =>
+      series.reduce((sum, asset) => {
+        const line = asset.sparkline!.slice(-length);
+        return sum + (line[index] / asset.price) * asset.marketCap;
+      }, 0),
+    );
+  })();
+  // The personal tracker, valued at live prices with a real 7-day history.
+  const holdings = readHoldings();
+  const portfolioValue = holdings.reduce(
+    (sum, holding) =>
+      sum + holding.quantity * (prices[holding.symbol] ?? assetFor(holding.symbol).price),
+    0,
+  );
+  const portfolioHistory = holdingsHistory(
+    holdings,
+    Object.fromEntries(
+      marketAssets.map((asset) => [
+        asset.symbol,
+        (asset.sparkline ?? []).map((close, index, all) => ({
+          time: Date.now() - (all.length - 1 - index) * 3_600_000,
+          close,
+        })),
+      ]),
+    ),
+  ).map((point) => point.value);
+  const portfolioStart = portfolioHistory[0];
+  const portfolioChange =
+    portfolioStart && Number.isFinite(portfolioValue)
+      ? portfolioValue - portfolioStart
+      : NaN;
   return (
     <div className="app-shell">
       <aside className={mobileMenu ? "sidebar mobile-open" : "sidebar"}>
@@ -1399,14 +1372,14 @@ export default function Index() {
           </span>
           <button
             className="mobile-close icon-button"
-            aria-label="Close navigation"
+            aria-label={t("dashboard.closeNavigation")}
             onClick={() => setMobileMenu(false)}
           >
             <X size={18} />
           </button>
         </div>
-        <div className="workspace-label">WORKSPACE</div>
-        <nav className="primary-nav" aria-label="Main navigation">
+        <div className="workspace-label">{t("dashboard.workspaceEyebrow")}</div>
+        <nav className="primary-nav" aria-label={t("dashboard.mainNavigation")}>
           {(
             [
               ["Overview", LayoutDashboard],
@@ -1431,7 +1404,7 @@ export default function Index() {
               className={`nav-item ${activeScreen === label && !selectedAsset ? "selected" : ""}`}
             >
               <Icon size={17} strokeWidth={1.8} />
-              <span>{label}</span>
+              <span>{t(SCREEN_KEYS[label])}</span>
               {label === "Alerts" && alertCount > 0 && (
                 <span className="nav-count">{alertCount}</span>
               )}
@@ -1444,28 +1417,28 @@ export default function Index() {
               <CircleHelp size={17} />
             </div>
             <div>
-              <b>Need a hand?</b>
-              <span>Visit our help center</span>
+              <b>{t("dashboard.helpTitle")}</b>
+              <span>{t("dashboard.helpText")}</span>
             </div>
             <ChevronRight size={15} />
           </div>
           <button
             className="profile-row"
             aria-haspopup="dialog"
-            aria-label="Open account"
+            aria-label={t("dashboard.openAccount")}
             onClick={openAccount}
           >
             <div className="profile-avatar">
               {authLoading ? "…" : (user?.email?.[0]?.toUpperCase() ?? "G")}
             </div>
             <div className="profile-copy">
-              <b>{user?.email ?? "Northstar account"}</b>
+              <b>{user?.email ?? t("dashboard.accountFallback")}</b>
               <span>
                 {authLoading
-                  ? "Checking account"
+                  ? t("dashboard.checkingAccount")
                   : user
-                    ? "Manage account"
-                    : "Sign in or create account"}
+                    ? t("dashboard.manageAccount")
+                    : t("common.signInOrCreate")}
               </span>
             </div>
             <MoreHorizontal size={18} />
@@ -1475,7 +1448,7 @@ export default function Index() {
       {mobileMenu && (
         <button
           className="mobile-scrim"
-          aria-label="Close navigation"
+          aria-label={t("dashboard.closeNavigation")}
           onClick={() => setMobileMenu(false)}
         />
       )}
@@ -1484,31 +1457,33 @@ export default function Index() {
         <header className="topbar">
           <button
             className="mobile-menu-button icon-button"
-            aria-label="Open navigation"
+            aria-label={t("dashboard.openNavigation")}
             onClick={() => setMobileMenu(true)}
           >
             <Menu size={20} />
           </button>
           <div className="breadcrumb">
-            <span>Workspace</span>
+            <span>{t("dashboard.workspace")}</span>
             <ChevronRight size={14} />
-            <b>{selectedAsset ? currentAsset.name : activeScreen}</b>
+            <b>
+              {selectedAsset ? currentAsset.name : t(SCREEN_KEYS[activeScreen])}
+            </b>
           </div>
           <div className="topbar-actions">
             <button
               className="search-trigger"
               onClick={() => setSearchOpen(true)}
-              aria-label="Search assets"
+              aria-label={t("search.open")}
             >
               <Search size={16} />
-              <span>Search anything...</span>
+              <span>{t("search.trigger")}</span>
               <kbd>
                 <Command size={11} /> K
               </kbd>
             </button>
             <button
               className="icon-button settings-trigger"
-              aria-label="Open settings"
+              aria-label={t("settings.open")}
               onClick={() => setSettingsOpen(true)}
             >
               <Settings2 size={18} />
@@ -1523,7 +1498,7 @@ export default function Index() {
                 className="back-link"
                 onClick={() => navigateToScreen(returnScreenRef.current)}
               >
-                <ArrowLeft size={15} /> All markets
+                <ArrowLeft size={15} /> {t("dashboard.allMarkets")}
               </button>
               <div className="asset-detail-heading">
                 <div className="asset-detail-name">
@@ -1538,12 +1513,10 @@ export default function Index() {
                       <span className="symbol-chip">{currentAsset.symbol}</span>
                     </div>
                     <span className="asset-subtitle">
-                      Digital asset <span>·</span> Rank #
-                      {currentAsset.symbol === "BTC"
-                        ? "1"
-                        : currentAsset.symbol === "ETH"
-                          ? "2"
-                          : "8"}
+                      {t("asset.digitalAsset")} <span>·</span>{" "}
+                      {currentAsset.rank
+                        ? t("asset.rank", { rank: currentAsset.rank })
+                        : "—"}
                     </span>
                   </div>
                 </div>
@@ -1556,28 +1529,60 @@ export default function Index() {
                         : "negative-text"
                     }
                   >
-                    {currentAsset.change >= 0 ? "+" : "−"}
-                    {Math.abs(currentAsset.change).toFixed(2)}%{" "}
-                    <span>today</span>
+                    {formatChange(currentAsset.change)}{" "}
+                    <span>{t("common.today")}</span>
                   </span>
                 </div>
               </div>
               <div className="detail-stat-grid">
-                {[
-                  ["Market cap", "$1.32T", "#1 by market cap"],
-                  ["24h volume", "$28.46B", "+12.8% vs yesterday"],
-                  ["Circulating supply", "19.68M BTC", "93.7% of max supply"],
-                  ["24h range", "$65,842 — $68,105", "Low to high"],
-                ].map(([label, value, caption]) => (
+                {(
+                  [
+                    [
+                      "marketCap",
+                      formatCompactUsd(currentAsset.marketCap),
+                      currentAsset.rank
+                        ? t("asset.marketCapRank", { rank: currentAsset.rank })
+                        : "",
+                    ],
+                    [
+                      "volume",
+                      formatCompactUsd(currentAsset.volume24h),
+                      Number.isFinite(currentAsset.marketCap)
+                        ? t("asset.volumeShare", {
+                            percent: (
+                              (currentAsset.volume24h / currentAsset.marketCap) *
+                              100
+                            ).toFixed(2),
+                          })
+                        : "",
+                    ],
+                    [
+                      "supply",
+                      currentAsset.circulatingSupply
+                        ? `${numberFormat({ notation: "compact", maximumFractionDigits: 2 }).format(currentAsset.circulatingSupply)} ${currentAsset.symbol}`
+                        : "—",
+                      currentAsset.circulatingSupply && currentAsset.maxSupply
+                        ? t("asset.supplyShare", {
+                            percent: (
+                              (currentAsset.circulatingSupply /
+                                currentAsset.maxSupply) *
+                              100
+                            ).toFixed(1),
+                          })
+                        : t("asset.noMaxSupply"),
+                    ],
+                    [
+                      "range",
+                      currentAsset.low24h && currentAsset.high24h
+                        ? `${formatPrice(currentAsset.low24h)} — ${formatPrice(currentAsset.high24h)}`
+                        : "—",
+                      t("asset.rangeCaption"),
+                    ],
+                  ] as const
+                ).map(([label, value, caption]) => (
                   <div className="panel detail-stat" key={label}>
-                    <span>{label}</span>
-                    <b>
-                      {label === "Market cap"
-                        ? currentAsset.symbol === "BTC"
-                          ? value
-                          : "$68.42B"
-                        : value}
-                    </b>
+                    <span>{t(`asset.${label}`)}</span>
+                    <b>{value}</b>
                     <small>{caption}</small>
                   </div>
                 ))}
@@ -1592,24 +1597,25 @@ export default function Index() {
                 source={
                   currentAssetOverride?.price !== null &&
                   currentAssetOverride?.price !== undefined
-                    ? "Admin-managed price"
+                    ? t("chart.sourceAdmin")
                     : mockMode
-                      ? "Simulated candles"
-                      : "Binance · USDT (USD est.)"
+                      ? t("chart.sourceSimulated")
+                      : t("chart.sourceLive")
                 }
                 loading={chartLoading}
                 error={chartError}
                 onRetry={() => setChartRetry((value) => value + 1)}
+                assets={marketAssets}
               />
               <div className="detail-lower-grid">
                 <section className="panel detail-news">
                   <div className="section-heading">
                     <div>
-                      <span className="eyebrow">LATEST COVERAGE</span>
-                      <h2>News & insights</h2>
+                      <span className="eyebrow">{t("news.latestEyebrow")}</span>
+                      <h2>{t("news.latestTitle")}</h2>
                     </div>
                     <button className="text-button">
-                      View all <ArrowRight size={14} />
+                      {t("common.viewAll")} <ArrowRight size={14} />
                     </button>
                   </div>
                   {displayedNews.slice(0, 2).map((article) => (
@@ -1626,28 +1632,24 @@ export default function Index() {
                   ))}
                   {newsLoaded && displayedNews.length === 0 && (
                     <p className="muted-copy">
-                      No stories have been published yet.
+                      {t("news.nonePublished")}
                     </p>
                   )}
                 </section>
                 <section className="panel about-card">
                   <span className="eyebrow">
-                    ABOUT {currentAsset.name.toUpperCase()}
+                    {t("asset.about", { name: currentAsset.name })}
                   </span>
-                  <h2>A closer look</h2>
-                  <p>
-                    {currentAsset.name} is one of the most actively followed
-                    digital assets on the market. Review its price history,
-                    liquidity, and market context before making decisions.
-                  </p>
+                  <h2>{t("asset.closerLook")}</h2>
+                  <p>{t("asset.aboutText", { name: currentAsset.name })}</p>
                   <button
                     className="text-button"
                     onClick={() => toggleWatch(currentAsset.symbol)}
                   >
                     <Bookmark size={14} />
                     {watchlist.includes(currentAsset.symbol)
-                      ? "In your watchlist"
-                      : "Add to watchlist"}
+                      ? t("watchlist.inList")
+                      : t("watchlist.add")}
                   </button>
                 </section>
               </div>
@@ -1675,7 +1677,7 @@ export default function Index() {
               <div className="welcome-row">
                 <div>
                   <div className="eyebrow welcome-date">
-                    {new Intl.DateTimeFormat("en-US", {
+                    {dateFormat({
                       weekday: "long",
                       month: "long",
                       day: "numeric",
@@ -1684,61 +1686,106 @@ export default function Index() {
                       .format(new Date())
                       .toUpperCase()}{" "}
                     <span className="date-dot">·</span>{" "}
-                    {new Intl.DateTimeFormat("en-US", {
+                    {dateFormat({
                       hour: "numeric",
                       minute: "2-digit",
                       timeZoneName: "short",
                     }).format(new Date())}
                   </div>
-                  <h1>Market overview</h1>
-                  <p>A clearer view of what’s moving today.</p>
+                  <h1>{t("dashboard.title")}</h1>
+                  <p>{t("dashboard.subtitle")}</p>
                 </div>
                 <button className="button button-subtle date-select">
                   <span>
-                    Today,{" "}
-                    {new Intl.DateTimeFormat("en-US", {
-                      month: "short",
-                      day: "numeric",
-                    }).format(new Date())}
+                    {t("dashboard.todayDate", {
+                      date: dateFormat({ month: "short", day: "numeric" }).format(
+                        new Date(),
+                      ),
+                    })}
                   </span>
                   <ChevronDown size={15} />
                 </button>
               </div>
-              <section className="market-strip" aria-label="Market snapshot">
+              <section className="market-strip" aria-label={t("dashboard.snapshot")}>
                 <article className="market-summary">
-                  <span className="summary-label">TOTAL MARKET CAP</span>
-                  <b>$2.42T</b>
-                  <span className="summary-change positive-text">
-                    <ArrowUpRight size={14} /> 1.84% <small>24h</small>
-                  </span>
-                  <TinyTrend positive />
+                  <span className="summary-label">{t("dashboard.totalMarketCap")}</span>
+                  <b>{globalMarket ? formatCompactUsd(globalMarket.totalMarketCap) : "—"}</b>
+                  {globalMarket && (
+                    <span
+                      className={`summary-change ${globalMarket.marketCapChange24h >= 0 ? "positive-text" : "negative-text"}`}
+                    >
+                      {globalMarket.marketCapChange24h >= 0 ? (
+                        <ArrowUpRight size={14} />
+                      ) : (
+                        <ArrowDownRight size={14} />
+                      )}{" "}
+                      {Math.abs(globalMarket.marketCapChange24h).toFixed(2)}%{" "}
+                      <small>24h</small>
+                    </span>
+                  )}
+                  <Sparkline
+                    values={totalTrend}
+                    className="tiny-trend"
+                    label={t("dashboard.trackedTrend")}
+                  />
                 </article>
                 <article className="market-summary">
-                  <span className="summary-label">24H VOLUME</span>
-                  <b>$68.7B</b>
-                  <span className="summary-change positive-text">
-                    <ArrowUpRight size={14} /> 8.23% <small>24h</small>
-                  </span>
-                  <TinyTrend positive />
+                  <span className="summary-label">{t("dashboard.volume24h")}</span>
+                  <b>{globalMarket ? formatCompactUsd(globalMarket.totalVolume) : "—"}</b>
+                  {globalMarket && (
+                    <span className="summary-change">
+                      <small>
+                        {t("dashboard.volumeShare", {
+                          percent: (
+                            (globalMarket.totalVolume / globalMarket.totalMarketCap) *
+                            100
+                          ).toFixed(1),
+                        })}
+                      </small>
+                    </span>
+                  )}
                 </article>
                 <article className="market-summary">
-                  <span className="summary-label">BTC DOMINANCE</span>
+                  <span className="summary-label">{t("dashboard.btcDominance")}</span>
                   <b>
-                    54.2<span className="summary-percent">%</span>
+                    {globalMarket?.dominance.BTC
+                      ? globalMarket.dominance.BTC.toFixed(1)
+                      : "—"}
+                    <span className="summary-percent">%</span>
                   </b>
-                  <span className="summary-change negative-text">
-                    <ArrowDownRight size={14} /> 0.31% <small>24h</small>
-                  </span>
-                  <TinyTrend positive color="var(--text-muted)" />
+                  {globalMarket && (
+                    <>
+                      <div
+                        className="dominance-bar"
+                        role="img"
+                        aria-label={t("dashboard.dominanceLabel", {
+                          btc: (globalMarket.dominance.BTC ?? 0).toFixed(1),
+                          eth: (globalMarket.dominance.ETH ?? 0).toFixed(1),
+                        })}
+                      >
+                        <span style={{ width: `${globalMarket.dominance.BTC ?? 0}%` }} />
+                        <span style={{ width: `${globalMarket.dominance.ETH ?? 0}%` }} />
+                      </div>
+                      <span className="summary-change">
+                        <small>
+                          ETH {(globalMarket.dominance.ETH ?? 0).toFixed(1)}%
+                        </small>
+                      </span>
+                    </>
+                  )}
                 </article>
                 <article className="market-summary sentiment-card">
-                  <span className="summary-label">MARKET SENTIMENT</span>
-                  <b>Optimistic</b>
+                  <span className="summary-label">{t("dashboard.sentiment")}</span>
+                  <b>
+                    {fearGreed
+                      ? t(`dashboard.fearGreedLevels.${fearGreed.classification}`)
+                      : "—"}
+                  </b>
                   <div className="sentiment-meter">
-                    <span />
+                    <span style={{ width: `${fearGreed?.value ?? 0}%` }} />
                   </div>
                   <span className="sentiment-caption">
-                    Fear & Greed Index <b>68</b> / 100
+                    {t("dashboard.fearGreed")} <b>{fearGreed?.value ?? "—"}</b> / 100
                   </span>
                 </article>
               </section>
@@ -1754,25 +1801,26 @@ export default function Index() {
                     symbol="BTC"
                     source={
                       mockMode
-                        ? "Simulated candles"
-                        : "Binance · USDT (USD est.)"
+                        ? t("chart.sourceSimulated")
+                        : t("chart.sourceLive")
                     }
                     loading={chartLoading}
                     error={chartError}
                     onRetry={() => setChartRetry((value) => value + 1)}
+                    assets={marketAssets}
                   />
                   <div className="below-chart-grid">
                     <section className="panel movers-panel">
                       <div className="section-heading">
                         <div>
-                          <span className="eyebrow">MARKET PULSE</span>
-                          <h2>Top movers</h2>
+                          <span className="eyebrow">{t("movers.eyebrow")}</span>
+                          <h2>{t("movers.title")}</h2>
                         </div>
                         <button
                           className="text-button"
                           onClick={() => navigateToScreen("Markets")}
                         >
-                          All markets <ArrowRight size={14} />
+                          {t("dashboard.allMarkets")} <ArrowRight size={14} />
                         </button>
                       </div>
                       <div className="movers-list">
@@ -1792,16 +1840,15 @@ export default function Index() {
                               <b>{asset.name}</b>
                               <span>{asset.symbol} / USD</span>
                             </div>
-                            <TinyTrend positive={asset.change > 0} />
+                            <Sparkline values={asset.sparkline} className="tiny-trend" />
                             <span
                               className={
-                                asset.change > 0
+                                asset.change >= 0
                                   ? "change-value positive-text"
                                   : "change-value negative-text"
                               }
                             >
-                              {asset.change > 0 ? "+" : ""}
-                              {asset.change.toFixed(2)}%
+                              {formatChange(asset.change)}
                             </span>
                           </button>
                         ))}
@@ -1810,12 +1857,12 @@ export default function Index() {
                     <section className="panel news-panel">
                       <div className="section-heading">
                         <div>
-                          <span className="eyebrow">THE DAILY BRIEF</span>
-                          <h2>Worth a read</h2>
+                          <span className="eyebrow">{t("news.briefEyebrow")}</span>
+                          <h2>{t("news.briefTitle")}</h2>
                         </div>
                         <button
                           className="icon-button small-icon"
-                          aria-label="More news"
+                          aria-label={t("news.more")}
                         >
                           <Ellipsis size={18} />
                         </button>
@@ -1831,24 +1878,27 @@ export default function Index() {
                           <>
                             <div className="story-category">
                               {displayedNews[0].category} <span>·</span>{" "}
-                              {displayedNews[0].readMinutes} MIN READ
+                              {t("news.minRead", {
+                                count: displayedNews[0].readMinutes,
+                              })}
                             </div>
                             <h3>{displayedNews[0].title}</h3>
                             <p>{displayedNews[0].summary}</p>
                             <span className="story-link">
-                              Market brief <ArrowRight size={14} />
+                              {t("news.marketBrief")} <ArrowRight size={14} />
                             </span>
                           </>
                         ) : (
                           <p className="muted-copy">
-                            No published stories yet.
+                            {t("news.noneYet")}
                           </p>
                         )}
                       </div>
                       <div className="news-byline">
                         <div className="author-avatar">N</div>
                         <span>
-                          Northstar Research <i>·</i> 38 min ago
+                          Northstar Research <i>·</i>{" "}
+                          {t("news.minutesAgo", { count: 38 })}
                         </span>
                       </div>
                     </section>
@@ -1858,9 +1908,9 @@ export default function Index() {
                   <section className="panel watchlist-panel">
                     <div className="section-heading watchlist-heading">
                       <div>
-                        <span className="eyebrow">YOUR MARKET</span>
+                        <span className="eyebrow">{t("watchlist.eyebrow")}</span>
                         <h2>
-                          Watchlist{" "}
+                          {t("watchlist.title")}{" "}
                           <span className="watch-count">
                             {watchlist.length}
                           </span>
@@ -1868,20 +1918,20 @@ export default function Index() {
                       </div>
                       <button
                         className="icon-button small-icon"
-                        aria-label="Add to watchlist"
+                        aria-label={t("watchlist.add")}
                         onClick={() => setSearchOpen(true)}
                       >
                         <Plus size={18} />
                       </button>
                     </div>
                     <div className="watchlist-controls">
-                      <span>Asset</span>
+                      <span>{t("watchlist.asset")}</span>
                       <button
                         onClick={() =>
                           setSortBy(sortBy === "change" ? "price" : "change")
                         }
                       >
-                        24h change <ChevronDown size={13} />
+                        {t("watchlist.change24h")} <ChevronDown size={13} />
                       </button>
                     </div>
                     <div className="watchlist-rows">
@@ -1902,7 +1952,7 @@ export default function Index() {
                                 <small>{asset.symbol}</small>
                               </span>
                             </button>
-                            <TinyTrend positive={asset.change > 0} />
+                            <Sparkline values={asset.sparkline} className="tiny-trend" />
                             <div className="watch-price">
                               <b>
                                 {formatPrice(
@@ -1916,13 +1966,14 @@ export default function Index() {
                                     : "negative-text"
                                 }
                               >
-                                {asset.change >= 0 ? "+" : ""}
-                                {asset.change.toFixed(2)}%
+                                {formatChange(asset.change)}
                               </small>
                             </div>
                             <button
                               className="remove-watch"
-                              aria-label={`Remove ${asset.symbol} from watchlist`}
+                              aria-label={t("watchlist.removeLabel", {
+                                symbol: asset.symbol,
+                              })}
                               onClick={() => toggleWatch(asset.symbol)}
                             >
                               <X size={14} />
@@ -1932,8 +1983,8 @@ export default function Index() {
                       ) : (
                         <div className="empty-watchlist">
                           <Bookmark size={19} />
-                          <b>Your watchlist is empty</b>
-                          <span>Add assets to keep them close.</span>
+                          <b>{t("watchlist.emptyTitle")}</b>
+                          <span>{t("watchlist.emptyText")}</span>
                         </div>
                       )}
                     </div>
@@ -1941,81 +1992,56 @@ export default function Index() {
                       className="watchlist-add"
                       onClick={() => setSearchOpen(true)}
                     >
-                      <Plus size={15} /> Add an asset
+                      <Plus size={15} /> {t("watchlist.addAsset")}
                     </button>
                   </section>
                   <section className="panel portfolio-card">
                     <div className="section-heading">
                       <div>
-                        <span className="eyebrow">YOUR PORTFOLIO</span>
-                        <h2>Overview</h2>
+                        <span className="eyebrow">{t("portfolioCard.eyebrow")}</span>
+                        <h2>{t("nav.overview")}</h2>
                       </div>
                       <button
                         className="icon-button small-icon"
-                        aria-label="Portfolio options"
+                        aria-label={t("portfolioCard.options")}
                       >
                         <Ellipsis size={18} />
                       </button>
                     </div>
                     <div className="portfolio-total">
-                      <b>
-                        $24,680<span>.52</span>
-                      </b>
-                      <span className="portfolio-change">
-                        <ArrowUpRight size={14} /> $1,240.18 (5.29%)
-                      </span>
+                      <b>{holdings.length ? formatPrice(portfolioValue) : "—"}</b>
+                      {Number.isFinite(portfolioChange) && (
+                        <span
+                          className={`portfolio-change ${portfolioChange >= 0 ? "" : "negative-text"}`}
+                        >
+                          {portfolioChange >= 0 ? (
+                            <ArrowUpRight size={14} />
+                          ) : (
+                            <ArrowDownRight size={14} />
+                          )}{" "}
+                          {formatUsd(Math.abs(portfolioChange))} (
+                          {formatChange((portfolioChange / portfolioStart) * 100)})
+                        </span>
+                      )}
                     </div>
                     <div className="portfolio-chart">
-                      <svg
-                        viewBox="0 0 340 78"
-                        preserveAspectRatio="none"
-                        aria-label="Portfolio value has trended upward this month"
-                      >
-                        <defs>
-                          <linearGradient
-                            id="portfolio-gradient"
-                            x1="0"
-                            x2="0"
-                            y1="0"
-                            y2="1"
-                          >
-                            <stop
-                              offset="0"
-                              stopColor="var(--chart-line)"
-                              stopOpacity=".19"
-                            />
-                            <stop
-                              offset="100%"
-                              stopColor="var(--chart-line)"
-                              stopOpacity="0"
-                            />
-                          </linearGradient>
-                        </defs>
-                        <path
-                          d="M0 64 C22 57 29 62 46 50 S78 45 96 54 S124 37 143 40 S174 27 190 35 S226 14 244 24 S273 10 294 21 S322 5 340 9 V78 H0Z"
-                          fill="url(#portfolio-gradient)"
-                        />
-                        <path
-                          d="M0 64 C22 57 29 62 46 50 S78 45 96 54 S124 37 143 40 S174 27 190 35 S226 14 244 24 S273 10 294 21 S322 5 340 9"
-                          fill="none"
-                          stroke="var(--chart-line)"
-                          strokeWidth="2"
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      </svg>
+                      <Sparkline
+                        values={portfolioHistory}
+                        filled
+                        label={t("portfolioCard.trend")}
+                      />
                     </div>
                     <div className="portfolio-footer">
-                      <span>1M performance</span>
+                      <span>{t("chart.performance", { timeframe: "7D" })}</span>
                       <button onClick={() => navigateToScreen("Portfolio")}>
-                        View portfolio <ArrowRight size={13} />
+                        {t("portfolioCard.view")} <ArrowRight size={13} />
                       </button>
                     </div>
                   </section>
                   <div className="trust-note">
                     <div className="trust-lock">✓</div>
                     <span>
-                      Live tickers via Binance. Market summaries and portfolio
-                      values are illustrative. <b>Not financial advice.</b>
+                      {t("dashboard.trustNote")} <b>{t("common.notAdvice")}</b>
                     </span>
                   </div>
                 </aside>
@@ -2026,16 +2052,19 @@ export default function Index() {
             <span>© {new Date().getFullYear()} Northstar Markets</span>
             <span>
               <span className="footer-status">
-                <i /> All systems operational
+                <i /> {t("dashboard.operational")}
               </span>
-              <i className="footer-divider">·</i> Data by Binance{" "}
-              <i className="footer-divider">·</i> Not financial advice
+              <i className="footer-divider">·</i> {t("dashboard.dataBy")}{" "}
+              <i className="footer-divider">·</i> {t("common.notAdvice")}
             </span>
           </footer>
         </div>
       </main>
 
-      <nav className="mobile-bottom-nav" aria-label="Mobile navigation">
+      <nav
+        className="mobile-bottom-nav"
+        aria-label={t("dashboard.mobileNavigation")}
+      >
         {(
           [
             ["Overview", LayoutDashboard],
@@ -2048,10 +2077,10 @@ export default function Index() {
             key={label}
             className={activeScreen === label && !selectedAsset ? "active" : ""}
             onClick={() => navigateToScreen(label)}
-            aria-label={label}
+            aria-label={t(SCREEN_KEYS[label])}
           >
             <Icon size={18} />
-            <span>{label}</span>
+            <span>{t(SCREEN_KEYS[label])}</span>
           </button>
         ))}
       </nav>
@@ -2067,7 +2096,7 @@ export default function Index() {
             className="search-modal"
             role="dialog"
             aria-modal="true"
-            aria-label="Search markets"
+            aria-label={t("search.label")}
           >
             <div className="search-modal-input">
               <Search size={19} />
@@ -2075,13 +2104,13 @@ export default function Index() {
                 autoFocus
                 value={searchText}
                 onChange={(event) => setSearchText(event.target.value)}
-                placeholder="Search assets, symbols..."
+                placeholder={t("search.placeholder")}
               />
               <kbd>ESC</kbd>
               <button
                 className="icon-button"
                 onClick={() => setSearchOpen(false)}
-                aria-label="Close search"
+                aria-label={t("search.close")}
               >
                 <X size={16} />
               </button>
@@ -2089,7 +2118,7 @@ export default function Index() {
             <div className="search-modal-body">
               {!searchText && recentSearches.length > 0 && (
                 <>
-                  <div className="modal-section-label">RECENT SEARCHES</div>
+                  <div className="modal-section-label">{t("search.recent")}</div>
                   {recentSearches.map((symbol) => {
                     const asset = assetFor(symbol);
                     return (
@@ -2107,14 +2136,16 @@ export default function Index() {
                           <b>{asset.name}</b>
                           <small>{asset.symbol}</small>
                         </span>
-                        <span className="result-shortcut">Recent</span>
+                        <span className="result-shortcut">{t("search.recentTag")}</span>
                       </button>
                     );
                   })}
                 </>
               )}
-              {searchText && <div className="modal-section-label">ASSETS</div>}
-              {(searchText ? searchResults : ASSETS.slice(0, 5)).map(
+              {searchText && (
+                <div className="modal-section-label">{t("search.assets")}</div>
+              )}
+              {(searchText ? searchResults : marketAssets.slice(0, 5)).map(
                 (asset) => (
                   <div className="search-result-wrap" key={asset.symbol}>
                     <button
@@ -2137,7 +2168,11 @@ export default function Index() {
                     </button>
                     <button
                       className="result-add"
-                      aria-label={`${watchlist.includes(asset.symbol) ? "Remove" : "Add"} ${asset.symbol} ${watchlist.includes(asset.symbol) ? "from" : "to"} watchlist`}
+                      aria-label={
+                        watchlist.includes(asset.symbol)
+                          ? t("watchlist.removeLabel", { symbol: asset.symbol })
+                          : t("watchlist.addLabel", { symbol: asset.symbol })
+                      }
                       onClick={() => toggleWatch(asset.symbol)}
                     >
                       {watchlist.includes(asset.symbol) ? (
@@ -2152,20 +2187,20 @@ export default function Index() {
               {searchText && !searchResults.length && (
                 <div className="search-empty">
                   <Search size={21} />
-                  <b>No assets found</b>
-                  <span>Try a symbol like BTC or ETH.</span>
+                  <b>{t("search.emptyTitle")}</b>
+                  <span>{t("search.emptyText")}</span>
                 </div>
               )}
             </div>
             <div className="search-modal-footer">
               <span>
                 <kbd>↑</kbd>
-                <kbd>↓</kbd> to navigate
+                <kbd>↓</kbd> {t("search.navigate")}
               </span>
               <span>
-                <kbd>↵</kbd> to open
+                <kbd>↵</kbd> {t("search.openHint")}
               </span>
-              <span>Search across 8 markets</span>
+              <span>{t("search.across", { count: ASSETS.length })}</span>
             </div>
           </section>
         </div>
@@ -2186,41 +2221,48 @@ export default function Index() {
           >
             <div className="settings-modal-heading">
               <div>
-                <span className="eyebrow">PREFERENCES</span>
-                <h2 id="settings-title">Settings</h2>
+                <span className="eyebrow">{t("settings.eyebrow")}</span>
+                <h2 id="settings-title">{t("settings.title")}</h2>
               </div>
               <button
                 className="icon-button"
                 onClick={() => setSettingsOpen(false)}
-                aria-label="Close settings"
+                aria-label={t("settings.close")}
               >
                 <X size={18} />
               </button>
             </div>
             <div className="settings-section">
               <div>
-                <b>Appearance</b>
-                <span>Choose a comfortable look.</span>
+                <b>{t("settings.appearance")}</b>
+                <span>{t("settings.appearanceText")}</span>
               </div>
               <div className="theme-toggle">
                 <button
                   className={theme === "light" ? "active" : ""}
                   onClick={() => setTheme("light")}
                 >
-                  <Sun size={15} /> Light
+                  <Sun size={15} /> {t("settings.light")}
                 </button>
                 <button
                   className={theme === "dark" ? "active" : ""}
                   onClick={() => setTheme("dark")}
                 >
-                  <Moon size={15} /> Dark
+                  <Moon size={15} /> {t("settings.dark")}
                 </button>
               </div>
             </div>
             <div className="settings-section">
               <div>
-                <b>Market data</b>
-                <span>Choose how prices update on this device.</span>
+                <b>{t("common.language")}</b>
+                <span>{t("settings.languageText")}</span>
+              </div>
+              <LanguageSwitcher className="settings-language" />
+            </div>
+            <div className="settings-section">
+              <div>
+                <b>{t("settings.marketData")}</b>
+                <span>{t("settings.marketDataText")}</span>
               </div>
               <button
                 className={mockMode ? "switch is-on" : "switch"}
@@ -2230,8 +2272,8 @@ export default function Index() {
                   setMockMode(!mockMode);
                   showToast(
                     !mockMode
-                      ? "Live Binance feed enabled"
-                      : "Simulation mode enabled",
+                      ? t("settings.liveEnabled")
+                      : t("settings.simulationEnabled"),
                   );
                 }}
               >
@@ -2243,24 +2285,26 @@ export default function Index() {
                 <Activity size={16} />
               </div>
               <span>
-                <b>{mockMode ? "Simulation mode" : "Binance WebSocket"}</b>
+                <b>
+                  {mockMode ? t("settings.simulation") : "Binance WebSocket"}
+                </b>
                 <small>
                   {mockMode
-                    ? "Prices move locally for demos and offline use."
-                    : "Public market feed. No API key required."}
+                    ? t("settings.simulationText")
+                    : t("settings.liveText")}
                 </small>
               </span>
               <span
                 className={`settings-state ${mockMode ? "simulated" : "live"}`}
               >
                 <i />
-                {mockMode ? "SIMULATED" : "PUBLIC"}
+                {mockMode ? t("settings.simulatedTag") : t("settings.publicTag")}
               </span>
             </div>
             <div className="settings-section">
               <div>
-                <b>Color-safe palette</b>
-                <span>Use an alternate up/down color pairing.</span>
+                <b>{t("settings.colorSafe")}</b>
+                <span>{t("settings.colorSafeText")}</span>
               </div>
               <button
                 className={colorSafe ? "switch is-on" : "switch"}
@@ -2274,8 +2318,7 @@ export default function Index() {
             <div className="settings-storage">
               <Bookmark size={15} />
               <span>
-                Your watchlist, theme, and market preferences stay in this
-                browser. Account sign-in is handled securely by Supabase.
+                {t("settings.storage")}
               </span>
             </div>
             {user?.app_metadata?.role === "admin" && (
@@ -2286,14 +2329,14 @@ export default function Index() {
                   navigate("/admin");
                 }}
               >
-                <ShieldCheck size={15} /> Admin workspace
+                <ShieldCheck size={15} /> {t("settings.admin")}
               </button>
             )}
             <button
               className="button button-primary settings-done"
               onClick={() => setSettingsOpen(false)}
             >
-              Done
+              {t("common.done")}
             </button>
           </section>
         </div>
@@ -2304,7 +2347,7 @@ export default function Index() {
           fallback={
             <div className="modal-backdrop">
               <div className="account-modal-loading" role="status">
-                Loading email preferences…
+                {t("dashboard.loadingEmail")}
               </div>
             </div>
           }
@@ -2329,7 +2372,7 @@ export default function Index() {
             <Check size={13} />
           </span>
           <span>{toast}</span>
-          <button onClick={() => setToast("")}>Dismiss</button>
+          <button onClick={() => setToast("")}>{t("common.dismiss")}</button>
         </div>
       )}
     </div>

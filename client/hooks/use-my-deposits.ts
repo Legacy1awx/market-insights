@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import i18n from "@/i18n";
 import { useAuth } from "@/lib/auth";
 import { fetchMyDeposits, type Deposit } from "@/lib/deposits";
 
@@ -25,12 +26,14 @@ export function useMyDeposits() {
       for (const deposit of latest) {
         if (previous.get(deposit.id) !== "pending") continue;
         if (deposit.status === "confirmed") {
-          toast.success(`Your ${deposit.symbol} transfer was confirmed`, {
-            description: `${deposit.amount} ${deposit.symbol} has been added to your investments.`,
+          toast.success(i18n.t("deposit.toast.confirmed", { symbol: deposit.symbol }), {
+            description: i18n.t("deposit.toast.confirmedText", {
+              amount: `${deposit.amount} ${deposit.symbol}`,
+            }),
           });
         } else if (deposit.status === "rejected") {
-          toast.error(`Your ${deposit.symbol} transfer was rejected`, {
-            description: deposit.reviewNote ?? "Open the transfer for details.",
+          toast.error(i18n.t("deposit.toast.rejected", { symbol: deposit.symbol }), {
+            description: deposit.reviewNote ?? i18n.t("deposit.toast.rejectedText"),
           });
         }
       }
@@ -76,9 +79,9 @@ export function useMyDeposits() {
     setRefreshing(true);
     try {
       await load();
-      toast.success("Transfers updated");
+      toast.success(i18n.t("deposit.toast.updated"));
     } catch (refreshError) {
-      toast.error("Couldn't refresh your transfers", {
+      toast.error(i18n.t("deposit.toast.refreshFailed"), {
         description:
           refreshError instanceof Error ? refreshError.message : undefined,
       });

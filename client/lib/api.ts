@@ -1,3 +1,5 @@
+import i18n from "@/i18n";
+import { formatDate } from "@/i18n/format";
 import { supabase } from "@/lib/supabase";
 
 /** Error body returned by the API: a code plus optional field messages. */
@@ -16,12 +18,12 @@ export async function authorizedFetch<T>(
   init: RequestInit = {},
   messages: Record<string, string> = {},
 ): Promise<T> {
-  if (!supabase) throw new Error("Sign-in is not configured.");
+  if (!supabase) throw new Error(i18n.t("api.notConfigured"));
   const { data, error } = await supabase.auth.getSession();
   if (error) throw error;
   const token = data.session?.access_token;
   if (!token)
-    throw new Error("Your session has expired. Please sign in again.");
+    throw new Error(i18n.t("api.sessionExpired"));
   const response = await fetch(path, {
     ...init,
     cache: "no-store",
@@ -40,19 +42,14 @@ export async function authorizedFetch<T>(
     throw new Error(
       detail ??
         messages[failure?.error ?? ""] ??
-        "Something went wrong. Please try again.",
+        i18n.t("api.generic"),
     );
   }
   return body as T;
 }
 
 export function formatDateTime(value: string | null) {
-  return value
-    ? new Date(value).toLocaleString(undefined, {
-        dateStyle: "medium",
-        timeStyle: "short",
-      })
-    : "—";
+  return value ? formatDate(value) : "—";
 }
 
 export function shortenMiddle(value: string, keep = 8) {

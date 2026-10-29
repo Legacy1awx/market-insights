@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import i18n from "@/i18n";
+import { formatUsd } from "@/i18n/format";
 import { useAuth } from "@/lib/auth";
 import {
   fetchMyWithdrawals,
@@ -9,19 +11,18 @@ import {
 
 const POLL_INTERVAL_MS = 15_000;
 
-const usd = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-});
-
 function announce(withdrawal: Withdrawal) {
-  const amount = `${usd.format(Number(withdrawal.amountUsd))} from ${withdrawal.symbol}`;
+  const { t } = i18n;
+  const amount = t("withdrawal.amountFrom", {
+    amount: formatUsd(Number(withdrawal.amountUsd)),
+    symbol: withdrawal.symbol,
+  });
   if (withdrawal.status === "processing")
-    toast.info("Your withdrawal is being processed", { description: amount });
+    toast.info(t("withdrawal.toast.processing"), { description: amount });
   if (withdrawal.status === "completed")
-    toast.success("Your withdrawal is complete", { description: amount });
+    toast.success(t("withdrawal.toast.completed"), { description: amount });
   if (withdrawal.status === "rejected")
-    toast.error("Your withdrawal was rejected", {
+    toast.error(t("withdrawal.toast.rejected"), {
       description: withdrawal.adminNote ?? amount,
     });
 }

@@ -1,8 +1,10 @@
 import { useId, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Activity, ArrowDownRight, ArrowUpRight } from "lucide-react";
 import { TokenIcon } from "@/components/funds/TokenIcon";
 import { describeMovement } from "@/lib/movement";
 import { cn } from "@/lib/utils";
+import { dateFormat, formatDate, formatUsd } from "@/i18n/format";
 
 const CHART_TYPES = ["Area", "Line", "Candles"] as const;
 type ChartType = (typeof CHART_TYPES)[number];
@@ -42,10 +44,12 @@ const PLOT_TOP = 12;
 const PLOT_BOTTOM = 288;
 const GRID_LINES = 5;
 
-const usd = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-});
+const usd = { format: (value: number) => formatUsd(value) };
+const CHART_TYPE_KEYS = {
+  Area: "chart.area",
+  Line: "chart.line",
+  Candles: "chart.candles",
+} as const;
 
 function signedUsd(value: number) {
   return `${value >= 0 ? "+" : "−"}${usd.format(Math.abs(value))}`;
@@ -58,11 +62,8 @@ function signedPercent(value: number) {
 function formatAxisTime(time: number, spanMs: number) {
   const date = new Date(time);
   return spanMs > 24 * 60 * 60 * 1000
-    ? date.toLocaleDateString(undefined, { month: "short", day: "numeric" })
-    : date.toLocaleTimeString(undefined, {
-        hour: "numeric",
-        minute: "2-digit",
-      });
+    ? dateFormat({ month: "short", day: "numeric" }).format(date)
+    : dateFormat({ hour: "numeric", minute: "2-digit" }).format(date);
 }
 
 /** One candle per recorded balance, opening at the previous balance. */
@@ -94,11 +95,13 @@ function SegmentedControl<T extends string>({
   options,
   value,
   onChange,
+  format = (option) => option,
 }: {
   label: string;
   options: readonly T[];
   value: T;
   onChange: (value: T) => void;
+  format?: (option: T) => string;
 }) {
   return (
     <div className="chart-type-control" role="group" aria-label={label}>
@@ -109,7 +112,7 @@ function SegmentedControl<T extends string>({
           aria-pressed={value === option}
           onClick={() => onChange(option)}
         >
-          {option}
+          {format(option)}
         </button>
       ))}
     </div>
@@ -121,6 +124,7 @@ export function InvestmentPriceChart({
 }: {
   investments: ChartInvestment[];
 }) {
+  const { t } = useTranslation();
   const gradientId = useId();
   const [selectedId, setSelectedId] = useState(investments[0]?.id ?? "");
   const [type, setType] = useState<ChartType>("Area");
@@ -197,37 +201,42 @@ export function InvestmentPriceChart({
     setHoverIndex(Math.round(relative * (data.length - 1)));
   };
 
+  const timeframeLabel = (value: Timeframe) =>
+    value === "All" ? t("investmentChart.all") : value;
   const stats = [
-    { label: "Invested", value: usd.format(invested) },
+    { label: t("portfolio.invested"), value: usd.format(invested) },
     {
-      label: "Total return",
+      label: t("investmentChart.totalReturn"),
       value: `${signedUsd(totalReturn)} (${signedPercent(totalReturnPercent)})`,
       tone: totalReturn >= 0 ? "positive" : "negative",
     },
-    { label: `${timeframe} high`, value: usd.format(periodHigh) },
-    { label: `${timeframe} low`, value: usd.format(periodLow) },
-    { label: "Movement", value: describeMovement(investment) },
     {
-      label: "Last updated",
-      value: new Date(investment.updatedAt).toLocaleString(undefined, {
-        dateStyle: "medium",
-        timeStyle: "short",
-      }),
+      label: t("investmentChart.high", { timeframe: timeframeLabel(timeframe) }),
+      value: usd.format(periodHigh),
+    },
+    {
+      label: t("investmentChart.low", { timeframe: timeframeLabel(timeframe) }),
+      value: usd.format(periodLow),
+    },
+    { label: t("investmentChart.movement"), value: describeMovement(investment) },
+    {
+      label: t("portfolio.lastUpdated"),
+      value: formatDate(investment.updatedAt),
     },
   ];
 
   return (
     <section
       className="panel chart-panel investment-chart"
-      aria-label={`${investment.symbol} investment value`}
+      aria-label={t("investmentChart.label", { symbol: investment.symbol })}
     >
       <div className="investment-chart-top">
         <div className="investment-chart-heading">
-          <span className="eyebrow">ASSIGNED VALUE</span>
+          <span className="eyebrow">{t("investmentChart.eyebrow")}</span>
           <div
             className="investment-chart-assets"
             role="group"
-            aria-label="Investment"
+            aria-label={t("investmentChart.investment")}
           >
             {investments.map((item) => (
               <button
@@ -249,8 +258,9 @@ export function InvestmentPriceChart({
         </div>
         <div className="chart-tools">
           <SegmentedControl
-            label="Timeframe"
+            label={t("chart.timeframe")}
             options={TIMEFRAMES.map((item) => item.label)}
+            format={timeframeLabel}
             value={timeframe}
             onChange={(value) => {
               setTimeframe(value);
@@ -258,8 +268,9 @@ export function InvestmentPriceChart({
             }}
           />
           <SegmentedControl<ChartType>
-            label="Chart style"
+            label={t("chart.style")}
             options={CHART_TYPES}
+            format={(option) => t(CHART_TYPE_KEYS[option])}
             value={type}
             onChange={setType}
           />
@@ -281,8 +292,8 @@ export function InvestmentPriceChart({
         <span className="chart-value-note">
           {signedUsd(periodChange)}{" "}
           {timeframe === "All"
-            ? "since first record"
-            : `in the last ${timeframe}`}
+            ? t("investmentChart.sinceFirst")
+            : t("investmentChart.inLast", { timeframe })}
         </span>
       </div>
 
@@ -306,7 +317,11 @@ export function InvestmentPriceChart({
             onPointerLeave={() => setHoverIndex(null)}
             tabIndex={0}
             role="img"
-            aria-label={`${investment.symbol} value between ${usd.format(periodLow)} and ${usd.format(periodHigh)}. Use arrow keys to inspect values.`}
+            aria-label={t("investmentChart.description", {
+              symbol: investment.symbol,
+              min: usd.format(periodLow),
+              max: usd.format(periodHigh),
+            })}
             onKeyDown={(event) => {
               if (event.key === "ArrowLeft")
                 setHoverIndex((current) =>
@@ -426,7 +441,9 @@ export function InvestmentPriceChart({
               className="investment-chart-baseline-label"
               style={{ top: toPercent(plot.y(invested)) }}
             >
-              Invested {usd.format(invested)}
+              {t("investmentChart.investedLine", {
+                amount: usd.format(invested),
+              })}
             </span>
             {hoverIndex !== null && active && (
               <div
@@ -438,10 +455,7 @@ export function InvestmentPriceChart({
                 }}
               >
                 <span>
-                  {new Date(active.time).toLocaleString(undefined, {
-                    dateStyle: "medium",
-                    timeStyle: "short",
-                  })}
+                  {formatDate(active.time)}
                 </span>
                 <b>{usd.format(active.close)}</b>
                 <small
@@ -449,14 +463,19 @@ export function InvestmentPriceChart({
                     active.close >= invested ? "positive-text" : "negative-text"
                   }
                 >
-                  {signedUsd(active.close - invested)} vs invested (
-                  {signedPercent(
-                    invested ? ((active.close - invested) / invested) * 100 : 0,
-                  )}
-                  )
+                  {t("investmentChart.vsInvested", {
+                    amount: signedUsd(active.close - invested),
+                    percent: signedPercent(
+                      invested
+                        ? ((active.close - invested) / invested) * 100
+                        : 0,
+                    ),
+                  })}
                 </small>
                 <small>
-                  {signedUsd(active.close - active.open)} from previous record
+                  {t("investmentChart.fromPrevious", {
+                    amount: signedUsd(active.close - active.open),
+                  })}
                 </small>
               </div>
             )}
@@ -472,7 +491,7 @@ export function InvestmentPriceChart({
             {timeLabels.map((index, position) => (
               <span key={index}>
                 {position === timeLabels.length - 1
-                  ? "Now"
+                  ? t("chart.now")
                   : formatAxisTime(data[index].time, spanMs)}
               </span>
             ))}
@@ -481,8 +500,8 @@ export function InvestmentPriceChart({
       ) : (
         <div className="chart-empty">
           <Activity size={20} />
-          <b>No balance history yet</b>
-          <span>Values appear here as they are recorded.</span>
+          <b>{t("investmentChart.emptyTitle")}</b>
+          <span>{t("investmentChart.emptyText")}</span>
         </div>
       )}
     </section>

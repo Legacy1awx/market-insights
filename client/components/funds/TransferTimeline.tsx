@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { Check, Clock, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatDateTime, type DepositStatus } from "@/lib/deposits";
@@ -23,33 +24,34 @@ export function TransferTimeline({
   /** Admins read "their investment" instead of "your investment". */
   audience?: "user" | "admin";
 }) {
-  const owner = audience === "admin" ? "their" : "your";
+  const { t } = useTranslation();
+  const context = audience === "admin" ? "admin" : undefined;
   const steps: Step[] = [
     {
-      title: "Transfer submitted",
+      title: t("timeline.deposit.submitted"),
       detail: formatDateTime(submittedAt),
       state: "done",
     },
     {
-      title: "Admin verification",
+      title: t("timeline.deposit.verification"),
       detail:
         status === "pending"
-          ? "An admin is checking the transaction on the blockchain."
-          : "Transaction checked on the blockchain.",
+          ? t("timeline.deposit.checking")
+          : t("timeline.deposit.checked"),
       state: status === "pending" ? "current" : "done",
     },
     status === "rejected"
       ? {
-          title: "Rejected",
-          detail: `${formatDateTime(reviewedAt)} · No funds were added.`,
+          title: t("status.deposit.rejected"),
+          detail: `${formatDateTime(reviewedAt)} · ${t("timeline.deposit.noFunds")}`,
           state: "failed",
         }
       : {
-          title: `Added to ${owner} ${symbol} investment`,
+          title: t("timeline.deposit.added", { symbol, context }),
           detail:
             status === "confirmed"
               ? formatDateTime(reviewedAt)
-              : "Happens as soon as the transfer is confirmed.",
+              : t("timeline.deposit.addedLater"),
           state: status === "confirmed" ? "done" : "upcoming",
         },
   ];

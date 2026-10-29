@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { ArrowRight, Mail, ShieldCheck, UserRound, X } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 
@@ -8,6 +9,7 @@ type Props = {
 };
 
 export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
+  const { t } = useTranslation();
   const { user, isConfigured, sessionError, signIn, signOut, signUp } =
     useAuth();
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
@@ -28,12 +30,12 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
       (!firstName.trim() || !lastName.trim())
     ) {
       setIsError(true);
-      setMessage("Enter your first and last name.");
+      setMessage(t("auth.errors.nameRequired"));
       return;
     }
     if (mode === "sign-up" && password !== confirmPassword) {
       setIsError(true);
-      setMessage("The passwords do not match.");
+      setMessage(t("auth.errors.passwordMismatch"));
       return;
     }
 
@@ -53,15 +55,15 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
         setIsError(false);
         setMessage(
           result.sessionCreated
-            ? "Account created. You’re signed in."
-            : "Account created. Check your inbox for a confirmation link before signing in.",
+            ? t("auth.createdSignedIn")
+            : t("auth.createdConfirmEmail"),
         );
         if (!result.sessionCreated) setMode("sign-in");
         setPassword("");
         setConfirmPassword("");
       } else {
         setIsError(false);
-        setMessage("You’re signed in.");
+        setMessage(t("auth.signedInMessage"));
         setPassword("");
       }
     } catch (error) {
@@ -69,7 +71,7 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
       setMessage(
         error instanceof Error
           ? error.message
-          : "Authentication failed. Please try again.",
+          : t("auth.errors.failed"),
       );
     } finally {
       setBusy(false);
@@ -82,13 +84,13 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
     try {
       const result = await signOut();
       setIsError(Boolean(result.error));
-      setMessage(result.error ?? "You’re signed out.");
+      setMessage(result.error ?? t("auth.signedOutMessage"));
     } catch (error) {
       setIsError(true);
       setMessage(
         error instanceof Error
           ? error.message
-          : "Could not sign out. Please try again.",
+          : t("auth.errors.signOutFailed"),
       );
     } finally {
       setBusy(false);
@@ -110,19 +112,19 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
       >
         <div className="settings-modal-heading">
           <div>
-            <span className="eyebrow">NORTHSTAR ACCOUNT</span>
+            <span className="eyebrow">{t("auth.eyebrow")}</span>
             <h2 id="auth-title">
               {user
-                ? "Your account"
+                ? t("auth.titleAccount")
                 : mode === "sign-in"
-                  ? "Welcome back"
-                  : "Create your account"}
+                  ? t("auth.titleSignIn")
+                  : t("auth.titleSignUp")}
             </h2>
           </div>
           <button
             className="icon-button"
             onClick={onClose}
-            aria-label="Close account"
+            aria-label={t("auth.close")}
           >
             <X size={18} />
           </button>
@@ -130,24 +132,22 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
 
         <p className="account-intro">
           {user
-            ? "Your Northstar account is signed in on this device."
-            : "Sign in or create an account to use Northstar across your devices."}
+            ? t("auth.introSignedIn")
+            : t("auth.introSignedOut")}
         </p>
 
         {!isConfigured && (
           <div className="email-service-callout" role="status">
             <ShieldCheck size={16} />
             <span>
-              <b>Account sign-in needs setup</b>
-              Add your Supabase project URL and public anon key as
-              VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then restart the
-              development server.
+              <b>{t("auth.setupTitle")}</b>
+              {t("auth.setupText")}
             </span>
           </div>
         )}
         {sessionError && (
           <p className="account-notice error" role="alert">
-            Could not restore your saved sign-in: {sessionError}
+            {t("auth.sessionError", { error: sessionError })}
           </p>
         )}
 
@@ -155,8 +155,8 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
           <div className="auth-signed-in">
             <div className="email-subscriber-address">
               <UserRound size={16} />
-              <span>{user.email ?? "Signed-in user"}</span>
-              <i>Signed in</i>
+              <span>{user.email ?? t("auth.signedInUser")}</span>
+              <i>{t("auth.signedIn")}</i>
             </div>
             {message && (
               <p
@@ -171,12 +171,12 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
               disabled={busy}
               onClick={handleSignOut}
             >
-              {busy ? "Signing out…" : "Sign out"}
+              {busy ? t("auth.signingOut") : t("auth.signOut")}
             </button>
           </div>
         ) : (
           <>
-            <div className="auth-mode-switch" aria-label="Account access">
+            <div className="auth-mode-switch" aria-label={t("auth.accessLabel")}>
               <button
                 type="button"
                 className={mode === "sign-in" ? "selected" : ""}
@@ -186,7 +186,7 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
                   setMessage("");
                 }}
               >
-                Sign in
+                {t("common.signIn")}
               </button>
               <button
                 type="button"
@@ -197,14 +197,14 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
                   setMessage("");
                 }}
               >
-                Sign up
+                {t("auth.signUp")}
               </button>
             </div>
             <form className="account-form" onSubmit={submit}>
               {mode === "sign-up" && (
                 <>
                   <label className="account-field">
-                    <span>First name</span>
+                    <span>{t("auth.firstName")}</span>
                     <input
                       type="text"
                       autoComplete="given-name"
@@ -215,7 +215,7 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
                     />
                   </label>
                   <label className="account-field">
-                    <span>Last name</span>
+                    <span>{t("auth.lastName")}</span>
                     <input
                       type="text"
                       autoComplete="family-name"
@@ -228,11 +228,11 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
                 </>
               )}
               <label className="account-field">
-                <span>Email address</span>
+                <span>{t("auth.email")}</span>
                 <input
                   type="email"
                   autoComplete="email"
-                  placeholder="you@example.com"
+                  placeholder={t("auth.emailPlaceholder")}
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   maxLength={254}
@@ -240,7 +240,7 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
                 />
               </label>
               <label className="account-field">
-                <span>Password</span>
+                <span>{t("auth.password")}</span>
                 <input
                   type="password"
                   autoComplete={
@@ -255,7 +255,7 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
               </label>
               {mode === "sign-up" && (
                 <label className="account-field">
-                  <span>Confirm password</span>
+                  <span>{t("auth.confirmPassword")}</span>
                   <input
                     type="password"
                     autoComplete="new-password"
@@ -284,18 +284,18 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
               >
                 {busy
                   ? mode === "sign-in"
-                    ? "Signing in…"
-                    : "Creating account…"
+                    ? t("auth.signingIn")
+                    : t("auth.creatingAccount")
                   : mode === "sign-in"
-                    ? "Sign in"
-                    : "Create account"}{" "}
+                    ? t("common.signIn")
+                    : t("auth.createAccount")}{" "}
                 <ArrowRight size={14} />
               </button>
             </form>
             <p className="account-preferences-note">
               {mode === "sign-up"
-                ? "You may need to confirm your email before signing in."
-                : "New to Northstar? Choose Sign up to create an account."}
+                ? t("auth.confirmEmailNote")
+                : t("auth.newHereNote")}
             </p>
           </>
         )}
@@ -305,7 +305,7 @@ export default function AuthDialog({ onClose, onEmailUpdates }: Props) {
           type="button"
           onClick={onEmailUpdates}
         >
-          <Mail size={14} /> Manage email updates
+          <Mail size={14} /> {t("auth.manageEmail")}
         </button>
       </section>
     </div>

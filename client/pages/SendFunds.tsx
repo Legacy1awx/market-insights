@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Link, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import {
@@ -9,6 +10,7 @@ import {
   Wallet,
 } from "lucide-react";
 import type { DepositAsset } from "@shared/deposit-assets";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { TokenPicker } from "@/components/funds/TokenPicker";
 import { TransferForm } from "@/components/funds/TransferForm";
 import { TransferList } from "@/components/funds/TransferList";
@@ -34,6 +36,7 @@ function InvestStep({
   done?: boolean;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <li className={cn("invest-step panel", { active, done })}>
       <div className="invest-step-heading">
@@ -42,7 +45,7 @@ function InvestStep({
         </span>
         <div>
           <h2>
-            <span className="sr-only">Step {number}: </span>
+            <span className="sr-only">{t("funds.stepPrefix", { number })} </span>
             {title}
           </h2>
           <p>{description}</p>
@@ -54,6 +57,7 @@ function InvestStep({
 }
 
 export default function SendFunds() {
+  const { t } = useTranslation();
   const { user, isLoading: authLoading } = useAuth();
   const { deposits, loading, refreshing, error, refresh, addDeposit } =
     useMyDeposits();
@@ -86,8 +90,10 @@ export default function SendFunds() {
   const handleSubmitted = (deposit: Deposit) => {
     addDeposit(deposit);
     setSubmitted(deposit);
-    toast.success("Transfer submitted", {
-      description: `${deposit.amount} ${deposit.symbol} is awaiting confirmation by an admin.`,
+    toast.success(t("send.toastTitle"), {
+      description: t("send.toastText", {
+        amount: `${deposit.amount} ${deposit.symbol}`,
+      }),
     });
   };
 
@@ -103,26 +109,26 @@ export default function SendFunds() {
           <span className="funds-brand-mark">N</span>
           northstar<span>.</span>
         </Link>
-        <Link className="funds-back" to="/portfolio">
-          <ArrowLeft size={15} /> Back to portfolio
-        </Link>
+        <div className="funds-topbar-actions">
+          <LanguageSwitcher />
+          <Link className="funds-back" to="/portfolio">
+            <ArrowLeft size={15} /> {t("funds.backToPortfolio")}
+          </Link>
+        </div>
       </header>
 
       <section className="funds-content">
         <div className="funds-heading">
-          <span className="eyebrow">INVEST WITH CRYPTO</span>
-          <h1>Invest</h1>
-          <p>
-            Send USDT, BTC, ETH or SOL to Northstar. Once an admin confirms your
-            transfer, it's added to your investment in that token.
-          </p>
+          <span className="eyebrow">{t("send.eyebrow")}</span>
+          <h1>{t("send.title")}</h1>
+          <p>{t("send.intro")}</p>
         </div>
 
         <ol className="invest-steps">
           <InvestStep
             number={1}
-            title="Choose a token"
-            description="Pick the token you want to invest with."
+            title={t("send.step1Title")}
+            description={t("send.step1Text")}
             active={!selected}
             done={Boolean(selected)}
           >
@@ -131,8 +137,8 @@ export default function SendFunds() {
 
           <InvestStep
             number={2}
-            title="Copy the address and send"
-            description="Send the token from your wallet or exchange to this address."
+            title={t("send.step2Title")}
+            description={t("send.step2Text")}
             active={Boolean(selected) && !submitted}
             done={Boolean(submitted)}
           >
@@ -140,60 +146,60 @@ export default function SendFunds() {
               <WalletAddress asset={selected} />
             ) : (
               <p className="invest-step-placeholder">
-                Choose a token above to reveal its wallet address.
+                {t("send.step2Placeholder")}
               </p>
             )}
           </InvestStep>
 
           <InvestStep
             number={3}
-            title="Tell us about your transfer"
-            description="After sending, enter the details and click “I have sent funds”."
+            title={t("send.step3Title")}
+            description={t("send.step3Text")}
             active={Boolean(selected)}
             done={submittedLatest?.status === "confirmed"}
           >
             {!selected ? (
               <p className="invest-step-placeholder">
-                Available after you choose a token and send it.
+                {t("send.step3Placeholder")}
               </p>
             ) : authLoading ? (
               <p className="invest-step-placeholder" role="status">
-                <LoaderCircle className="admin-spinner" size={15} /> Checking
-                your account…
+                <LoaderCircle className="admin-spinner" size={15} />{" "}
+                {t("funds.checkingAccount")}
               </p>
             ) : !user ? (
               <div className="invest-signin">
                 <Wallet size={18} />
                 <div>
-                  <b>Sign in to submit your transfer</b>
-                  <span>
-                    Your account keeps track of your transfers and investments.
-                  </span>
+                  <b>{t("send.signInTitle")}</b>
+                  <span>{t("send.signInText")}</span>
                 </div>
                 <Link
                   className="button button-primary"
                   to="/account"
                   state={{ returnTo: "/send" }}
                 >
-                  Sign in or create account
+                  {t("common.signInOrCreate")}
                 </Link>
               </div>
             ) : submittedLatest ? (
               <div className="invest-submitted" role="status">
                 <h3>
                   {submittedLatest.status === "confirmed"
-                    ? "Your transfer is confirmed"
+                    ? t("send.result.confirmedTitle")
                     : submittedLatest.status === "rejected"
-                      ? "Your transfer was rejected"
-                      : "Transfer submitted, awaiting confirmation"}
+                      ? t("send.result.rejectedTitle")
+                      : t("send.result.pendingTitle")}
                 </h3>
                 <p>
                   {submittedLatest.amount} {submittedLatest.symbol} ·{" "}
                   {submittedLatest.status === "pending"
-                    ? "we'll update this page as soon as an admin reviews it."
+                    ? t("send.result.pendingText")
                     : submittedLatest.status === "confirmed"
-                      ? `it has been added to your ${submittedLatest.symbol} investment.`
-                      : "no funds were added. Open the transfer below for details."}
+                      ? t("send.result.confirmedText", {
+                          symbol: submittedLatest.symbol,
+                        })
+                      : t("send.result.rejectedText")}
                 </p>
                 <TransferTimeline
                   status={submittedLatest.status}
@@ -204,7 +210,7 @@ export default function SendFunds() {
                 <div className="transfer-actions">
                   {submittedLatest.status === "confirmed" && (
                     <Link className="button button-primary" to="/portfolio">
-                      View my investments
+                      {t("send.viewInvestments")}
                     </Link>
                   )}
                   <button
@@ -215,7 +221,7 @@ export default function SendFunds() {
                       setSelected(null);
                     }}
                   >
-                    Make another investment
+                    {t("send.another")}
                   </button>
                 </div>
               </div>
@@ -233,8 +239,8 @@ export default function SendFunds() {
           <section className="funds-history" id="transfers">
             <div className="funds-history-heading">
               <div>
-                <span className="eyebrow">YOUR ACCOUNT</span>
-                <h2>Your transfers</h2>
+                <span className="eyebrow">{t("funds.yourAccount")}</span>
+                <h2>{t("send.transfersTitle")}</h2>
               </div>
               <button
                 className="button button-subtle button-small"
@@ -246,7 +252,7 @@ export default function SendFunds() {
                 ) : (
                   <RefreshCw size={13} />
                 )}
-                Refresh
+                {t("common.refresh")}
               </button>
             </div>
             {error && (
@@ -256,13 +262,12 @@ export default function SendFunds() {
             )}
             {loading ? (
               <div className="panel funds-empty" role="status">
-                <LoaderCircle className="admin-spinner" size={16} /> Loading
-                your transfers…
+                <LoaderCircle className="admin-spinner" size={16} />{" "}
+                {t("send.loadingTransfers")}
               </div>
             ) : deposits.length === 0 ? (
               <div className="panel funds-empty">
-                No transfers yet. Follow the steps above to make your first
-                investment.
+                {t("send.noTransfers")}
               </div>
             ) : (
               <TransferList
@@ -274,7 +279,7 @@ export default function SendFunds() {
                       className="button button-subtle button-small"
                       to="/portfolio"
                     >
-                      View in portfolio
+                      {t("send.viewInPortfolio")}
                     </Link>
                   ) : null
                 }
@@ -284,8 +289,7 @@ export default function SendFunds() {
         )}
 
         <p className="funds-disclaimer">
-          Northstar never asks for your wallet keys or recovery phrase. Always
-          check the token and network in your wallet before you send.
+          {t("send.disclaimer")}
         </p>
       </section>
     </main>

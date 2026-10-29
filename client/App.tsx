@@ -1,6 +1,8 @@
 import "./global.css";
+import "./i18n";
 
 import { lazy, Suspense } from "react";
+import { useTranslation } from "react-i18next";
 import { Toaster } from "@/components/ui/toaster";
 import { createRoot } from "react-dom/client";
 import { AuthProvider } from "@/lib/auth";
@@ -16,6 +18,11 @@ const SendFunds = lazy(() => import("./pages/SendFunds"));
 const Withdraw = lazy(() => import("./pages/Withdraw"));
 
 const queryClient = new QueryClient();
+
+function RouteFallback({ label }: { label: "loadingTransfers" | "loadingWithdrawals" | "loadingAdmin" }) {
+  const { t } = useTranslation();
+  return <div role="status">{t(`app.${label}`)}</div>;
+}
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -36,7 +43,7 @@ const App = () => (
             <Route
               path="/send"
               element={
-                <Suspense fallback={<div role="status">Loading transfer addresses…</div>}>
+                <Suspense fallback={<RouteFallback label="loadingTransfers" />}>
                   <SendFunds />
                 </Suspense>
               }
@@ -44,7 +51,7 @@ const App = () => (
             <Route
               path="/withdraw"
               element={
-                <Suspense fallback={<div role="status">Loading withdrawals…</div>}>
+                <Suspense fallback={<RouteFallback label="loadingWithdrawals" />}>
                   <Withdraw />
                 </Suspense>
               }
@@ -52,7 +59,7 @@ const App = () => (
             <Route
               path="/admin"
               element={
-                <Suspense fallback={<div role="status">Loading admin workspace…</div>}>
+                <Suspense fallback={<RouteFallback label="loadingAdmin" />}>
                   <Admin />
                 </Suspense>
               }
@@ -65,4 +72,9 @@ const App = () => (
   </QueryClientProvider>
 );
 
-createRoot(document.getElementById("root")!).render(<App />);
+// The outer Suspense covers the first load of a non-English dictionary.
+createRoot(document.getElementById("root")!).render(
+  <Suspense fallback={null}>
+    <App />
+  </Suspense>,
+);

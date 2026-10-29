@@ -1,5 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { ArrowRight, Check, Mail, ShieldCheck, X } from "lucide-react";
+import i18n from "@/i18n";
 
 type EmailPreferences = { priceAlerts: boolean; weeklyBrief: boolean };
 type EmailPriceAlert = {
@@ -66,18 +68,16 @@ function readLocalAlerts(): EmailPriceAlert[] {
 
 async function responseError(response: Response) {
   const body = await response.json().catch(() => ({}));
-  if (response.status === 503)
-    return "Email delivery is not configured. Set the Supabase and Resend server credentials and apply the email migration.";
-  if (response.status === 429)
-    return "Too many attempts. Wait a little before trying again.";
+  if (response.status === 503) return i18n.t("email.errors.notConfigured");
+  if (response.status === 429) return i18n.t("email.errors.tooMany");
   if (body.error === "invalid_or_expired_code")
-    return "That code is incorrect or expired. Request a new code and try again.";
-  if (response.status === 401)
-    return "Your email session expired. Verify your email again to manage these preferences.";
-  return "We couldn’t complete that request. Check your connection and try again.";
+    return i18n.t("email.errors.badCode");
+  if (response.status === 401) return i18n.t("email.errors.expired");
+  return i18n.t("email.errors.generic");
 }
 
 export default function EmailAccountDialog({ onClose, onAccount }: Props) {
+  const { t } = useTranslation();
   const [ready, setReady] = useState<boolean | null>(null);
   const [subscriber, setSubscriber] = useState<EmailSubscriber | null>(null);
   const [email, setEmail] = useState("");
@@ -140,7 +140,7 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
   const subscribe = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!preferences.priceAlerts && !preferences.weeklyBrief) {
-      showError("Choose at least one type of email to continue.");
+      showError(t("email.errors.chooseOne"));
       return;
     }
     setBusy(true);
@@ -166,11 +166,9 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
       }
       setEmail(submittedEmail);
       setVerificationPending(true);
-      showSuccess(
-        "We sent a one-time verification code. It expires in 10 minutes.",
-      );
+      showSuccess(t("email.codeSent"));
     } catch {
-      showError("We couldn’t reach the email service. Please try again later.");
+      showError(t("email.errors.unreachable"));
     } finally {
       setBusy(false);
     }
@@ -212,9 +210,9 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
         const savedData = await saved.json();
         setAlerts(savedData.alerts);
       }
-      showSuccess("Email verified. Your selected updates are ready.");
+      showSuccess(t("email.verified"));
     } catch {
-      showError("We couldn’t verify that code. Please try again.");
+      showError(t("email.errors.verifyFailed"));
     } finally {
       setBusy(false);
     }
@@ -241,9 +239,9 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
       }
       setAlerts(preferences.priceAlerts ? readLocalAlerts() : []);
       setSubscriber({ ...subscriber, ...preferences });
-      showSuccess("Your email preferences are saved.");
+      showSuccess(t("email.saved"));
     } catch {
-      showError("We couldn’t save your preferences. Please try again.");
+      showError(t("email.errors.saveFailed"));
     } finally {
       setBusy(false);
     }
@@ -258,9 +256,9 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
       });
       setSubscriber(null);
       setVerificationPending(false);
-      setMessage("You’ve signed out of email preferences on this device.");
+      setMessage(t("email.signedOut"));
     } catch {
-      showError("We couldn’t sign out. Please try again.");
+      showError(t("auth.errors.signOutFailed"));
     } finally {
       setBusy(false);
     }
@@ -281,29 +279,28 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
       >
         <div className="settings-modal-heading">
           <div>
-            <span className="eyebrow">EMAIL PREFERENCES</span>
+            <span className="eyebrow">{t("email.eyebrow")}</span>
             <h2 id="account-title">
-              {subscriber ? "Manage your emails" : "Get Northstar by email"}
+              {subscriber ? t("email.titleManage") : t("email.titleSubscribe")}
             </h2>
           </div>
           <button
             className="icon-button"
             onClick={onClose}
-            aria-label="Close email preferences"
+            aria-label={t("email.close")}
           >
             <X size={18} />
           </button>
         </div>
         <p className="account-intro">
-          Choose the market updates you want. We’ll only email the topics you
-          select.
+          {t("email.intro")}
         </p>
         <button
           className="text-button email-resend account-switch"
           type="button"
           onClick={onAccount}
         >
-          Return to password account
+          {t("email.backToAccount")}
         </button>
         <div
           className={
@@ -315,16 +312,16 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
           <span>
             <b>
               {ready === null
-                ? "Checking email service"
+                ? t("email.service.checking")
                 : ready
-                  ? "Verified email delivery"
-                  : "Email delivery needs setup"}
+                  ? t("email.service.ready")
+                  : t("email.service.setup")}
             </b>
             {ready === null
-              ? "Checking the server configuration."
+              ? t("email.service.checkingText")
               : ready
-                ? "Verification codes, price alerts, and weekly briefs are ready."
-                : "Connect Supabase and Resend, configure the sender domain, and apply the email migration."}
+                ? t("email.service.readyText")
+                : t("email.service.setupText")}
           </span>
         </div>
 
@@ -333,7 +330,7 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
             <div className="email-subscriber-address">
               <Mail size={15} />
               <span>{subscriber.email}</span>
-              <i>Email verified</i>
+              <i>{t("email.verifiedTag")}</i>
             </div>
             <EmailPreferenceFields
               preferences={preferences}
@@ -341,8 +338,8 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
             />
             <div className="email-alert-sync-note">
               {preferences.priceAlerts
-                ? `${alerts.length} saved price alert${alerts.length === 1 ? "" : "s"} will be checked every five minutes.`
-                : "Price alert emails are turned off."}
+                ? t("email.alertSync", { count: alerts.length })
+                : t("email.alertsOff")}
             </div>
             {message && (
               <p
@@ -358,32 +355,30 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
                 disabled={busy}
                 onClick={savePreferences}
               >
-                Save preferences
+                {t("email.save")}
               </button>
               <button
                 className="button button-subtle"
                 disabled={busy}
                 onClick={signOut}
               >
-                Sign out of email preferences
+                {t("email.signOut")}
               </button>
             </div>
             <p className="account-preferences-note">
-              Unsubscribe links are included in every email. Each alert sends
-              once when its condition is met; change the condition or create a
-              new alert to receive another notification.
+              {t("email.unsubscribeNote")}
             </p>
           </div>
         ) : (
           <>
             <form className="account-form" onSubmit={subscribe}>
               <label className="account-field">
-                <span>Email address</span>
+                <span>{t("auth.email")}</span>
                 <input
                   name="email"
                   type="email"
                   autoComplete="email"
-                  placeholder="you@example.com"
+                  placeholder={t("auth.emailPlaceholder")}
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   required
@@ -413,7 +408,7 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
                   (!preferences.priceAlerts && !preferences.weeklyBrief)
                 }
               >
-                {busy ? "Sending code…" : "Email me a verification code"}{" "}
+                {busy ? t("email.sending") : t("email.sendCode")}{" "}
                 <ArrowRight size={14} />
               </button>
             </form>
@@ -423,7 +418,7 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
                 onSubmit={verify}
               >
                 <label className="account-field">
-                  <span>6-digit verification code</span>
+                  <span>{t("email.codeLabel")}</span>
                   <input
                     name="code"
                     type="text"
@@ -453,7 +448,8 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
                   type="submit"
                   disabled={busy || code.length !== 6}
                 >
-                  {busy ? "Verifying…" : "Verify email"} <Check size={14} />
+                  {busy ? t("email.verifying") : t("email.verify")}{" "}
+                  <Check size={14} />
                 </button>
                 <button
                   className="text-button email-resend"
@@ -461,13 +457,12 @@ export default function EmailAccountDialog({ onClose, onAccount }: Props) {
                   disabled={busy}
                   onClick={() => setVerificationPending(false)}
                 >
-                  Use another email or request a new code
+                  {t("email.another")}
                 </button>
               </form>
             )}
             <p className="account-preferences-note">
-              Only verified email addresses are added. Email update preferences
-              are managed separately from your Northstar password account.
+              {t("email.separateNote")}
             </p>
           </>
         )}
@@ -483,13 +478,14 @@ function EmailPreferenceFields({
   preferences: EmailPreferences;
   onChange: (preferences: EmailPreferences) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="account-preferences">
       <div className="account-preferences-heading">
         <Mail size={16} />
         <div>
-          <b>Email preferences</b>
-          <span>Choose what you’d like to receive.</span>
+          <b>{t("email.preferences")}</b>
+          <span>{t("email.preferencesText")}</span>
         </div>
       </div>
       <label className="account-checkbox-row">
@@ -501,8 +497,8 @@ function EmailPreferenceFields({
           }
         />
         <span>
-          <b>Price alert emails</b>
-          <small>Updates when a saved asset reaches its alert threshold.</small>
+          <b>{t("email.priceAlerts")}</b>
+          <small>{t("email.priceAlertsText")}</small>
         </span>
       </label>
       <label className="account-checkbox-row">
@@ -514,8 +510,8 @@ function EmailPreferenceFields({
           }
         />
         <span>
-          <b>Weekly market brief</b>
-          <small>A weekly roundup of major digital assets.</small>
+          <b>{t("email.weeklyBrief")}</b>
+          <small>{t("email.weeklyBriefText")}</small>
         </span>
       </label>
     </div>
