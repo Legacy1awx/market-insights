@@ -5,6 +5,7 @@ import {
   type Response,
   type NextFunction,
 } from "express";
+import { logAuthFailure } from "../supabase-env.ts";
 
 type InvestmentRequest = Request & {
   investmentDatabase?: SupabaseClient;
@@ -27,9 +28,7 @@ function isChartMigrationMissing(error: { code?: string }) {
 function sendPortfolioError(response: Response, error: { code?: string }) {
   if (isChartMigrationMissing(error)) {
     console.error("Investment chart migration is missing.", error.code);
-    response
-      .status(503)
-      .json({ error: "investment_chart_migration_required" });
+    response.status(503).json({ error: "investment_chart_migration_required" });
     return;
   }
   console.error("User investment portfolio request failed.", error.code);
@@ -64,13 +63,18 @@ investmentsRouter.use(
       const database = createInvestmentDatabase();
       const { data, error } = await database.auth.getUser(token);
       if (error || !data.user) {
+        console.warn(
+          "[investments] Sign-in token rejected:",
+          error?.message ?? "no user",
+        );
         response.status(401).json({ error: "authentication_required" });
         return;
       }
       request.investmentDatabase = database;
       request.investmentUserId = data.user.id;
       next();
-    } catch {
+    } catch (error) {
+      logAuthFailure("investments", error);
       response.status(503).json({ error: "investment_service_unavailable" });
     }
   },

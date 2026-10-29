@@ -5,6 +5,7 @@ import {
   type Response,
   type NextFunction,
 } from "express";
+import { logAuthFailure } from "../supabase-env.ts";
 import { z } from "zod";
 import { DEPOSIT_ASSETS } from "../../shared/deposit-assets.ts";
 
@@ -99,13 +100,18 @@ depositRouter.use(
       const database = makeDatabase();
       const { data, error } = await database.auth.getUser(token);
       if (error || !data.user) {
+        console.warn(
+          "[deposits] Sign-in token rejected:",
+          error?.message ?? "no user",
+        );
         response.status(401).json({ error: "authentication_required" });
         return;
       }
       request.depositDatabase = database;
       request.depositUser = { id: data.user.id };
       next();
-    } catch {
+    } catch (error) {
+      logAuthFailure("deposits", error);
       response.status(503).json({ error: "deposit_service_unavailable" });
     }
   },

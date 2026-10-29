@@ -5,6 +5,7 @@ import {
   type Request,
   type Response,
 } from "express";
+import { logAuthFailure } from "../supabase-env.ts";
 import { z } from "zod";
 import {
   USD_AMOUNT_PATTERN,
@@ -199,13 +200,18 @@ withdrawalRouter.use(
       const database = createDatabase();
       const { data, error } = await database.auth.getUser(token);
       if (error || !data.user) {
+        console.warn(
+          "[withdrawals] Sign-in token rejected:",
+          error?.message ?? "no user",
+        );
         response.status(401).json({ error: "authentication_required" });
         return;
       }
       request.withdrawalDatabase = database;
       request.withdrawalUserId = data.user.id;
       next();
-    } catch {
+    } catch (error) {
+      logAuthFailure("withdrawals", error);
       response.status(503).json({ error: "withdrawals_unavailable" });
     }
   },

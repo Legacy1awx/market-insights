@@ -5,6 +5,7 @@ import {
   type Response,
   type NextFunction,
 } from "express";
+import { logAuthFailure } from "../supabase-env.ts";
 import { z } from "zod";
 import { createAdminWithdrawalRouter } from "./withdrawals.ts";
 
@@ -304,6 +305,10 @@ adminRouter.use(
       const database = createAdminDatabase();
       const { data, error } = await database.auth.getUser(token);
       if (error || !data.user) {
+        console.warn(
+          "[admin] Sign-in token rejected:",
+          error?.message ?? "no user",
+        );
         response.status(401).json({ error: "authentication_required" });
         return;
       }
@@ -314,7 +319,8 @@ adminRouter.use(
       request.adminDatabase = database;
       request.adminUserId = data.user.id;
       next();
-    } catch {
+    } catch (error) {
+      logAuthFailure("admin", error);
       response.status(503).json({ error: "admin_service_unavailable" });
     }
   },
